@@ -3,8 +3,8 @@
 import argparse
 import os
 import sys
+from harness.env import carregar_env
 from harness.errors import HarnessError
-from harness.gemini_client import carregar_env
 from harness.loop import executar_loop
 from harness.providers import criar_provider
 

@@ -48,6 +48,19 @@ class Provider(ABC):
 # Funções puras de conversão e normalização — GEMINI
 # ============================================================================
 
+def modelos_a_tentar(modelo_inicial: str, fallbacks: Optional[List[str]] = None) -> List[str]:
+    """
+    Função pura que retorna a lista de modelos a tentar em ordem,
+    iniciando pelo modelo_inicial e incluindo os fallbacks sem duplicatas.
+    """
+    lista = [modelo_inicial]
+    if fallbacks:
+        for mod in fallbacks:
+            if mod not in lista:
+                lista.append(mod)
+    return lista
+
+
 def gemini_tool_schema() -> List[Dict[str, Any]]:
     """Gera o schema de tools no formato da API Gemini a partir da definição neutra."""
     return [
@@ -299,11 +312,7 @@ class GeminiProvider(Provider):
         return gemini_tool_schema()
 
     def gerar(self, mensagens: List[Dict[str, Any]], system_prompt: str) -> ProviderResponse:
-        modelos = [self.modelo_ativo]
-        for fb in self.fallbacks:
-            if fb not in modelos:
-                modelos.append(fb)
-
+        modelos = modelos_a_tentar(self.modelo_ativo, self.fallbacks)
         contents = mensagens_para_gemini_contents(mensagens)
         ultimo_erro = None
 

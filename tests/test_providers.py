@@ -9,6 +9,7 @@ from harness.providers import (
     openai_tool_schema,
     mensagens_para_openai,
     normalizar_resposta_openai,
+    modelos_a_tentar,
     ProviderResponse,
 )
 
@@ -195,4 +196,29 @@ def test_normalizar_resposta_openai():
         "cached": 40
     }
     assert resp.modelo == "deepseek-chat"
+
+
+def test_modelos_a_tentar_sem_duplicatas_e_com_fallback():
+    modelos = modelos_a_tentar("gemini-2.5-flash", ["gemini-2.0-flash"])
+    assert modelos == ["gemini-2.5-flash", "gemini-2.0-flash"]
+
+
+def test_modelos_a_tentar_com_duplicata_no_fallback():
+    modelos = modelos_a_tentar("gemini-2.5-flash", ["gemini-2.5-flash", "gemini-2.0-flash"])
+    assert modelos == ["gemini-2.5-flash", "gemini-2.0-flash"]
+
+
+def test_modelos_a_tentar_com_fallbacks_vazios():
+    modelos = modelos_a_tentar("gemini-2.5-flash", [])
+    assert modelos == ["gemini-2.5-flash"]
+    modelos_none = modelos_a_tentar("gemini-2.5-flash", None)
+    assert modelos_none == ["gemini-2.5-flash"]
+
+
+def test_modelos_a_tentar_preserva_ordem():
+    modelos = modelos_a_tentar(
+        "modelo-a",
+        ["modelo-b", "modelo-a", "modelo-c", "modelo-b"]
+    )
+    assert modelos == ["modelo-a", "modelo-b", "modelo-c"]
 

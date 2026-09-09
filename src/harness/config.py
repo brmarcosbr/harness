@@ -4,7 +4,13 @@ from typing import Any, Dict
 
 # Preços oficiais por 1 milhão de tokens (USD)
 # Gemini: https://ai.google.dev/pricing (Paid tier Standard, conferido em set/2026)
-# DeepSeek: https://api-docs.deepseek.com/quick_start/pricing (DeepSeek API, conferido em set/2026)
+# DeepSeek: https://api-docs.deepseek.com/quick_start/pricing (conferido em set/2026, modelo deepseek-v4-flash)
+# Tabela oficial DeepSeek (deepseek-v4-flash):
+#   - Off-peak (seg-sex 16:30-08:30 UTC, sáb-dom all day):
+#       input (cache miss): $0.22 / 1M | output: $0.66 / 1M | cache (hit): $0.007 / 1M
+#   - Peak (seg-sex 01:00-04:00 e 06:00-10:00 UTC):
+#       preço = 2x o valor off-peak (input: $0.44 / output: $1.32 / cache: $0.014 / 1M)
+# NOTA: O custo calculado pelo harness é uma estimativa baseada nos valores OFF-PEAK.
 PROVIDER_PRECOS: Dict[str, Dict[str, float]] = {
     "gemini": {
         "input": 0.30,
@@ -12,13 +18,9 @@ PROVIDER_PRECOS: Dict[str, Dict[str, float]] = {
         "cache": 0.03,
     },
     "deepseek": {
-        # DeepSeek API (conferido em set/2026 via api-docs.deepseek.com/quick_start/pricing):
-        # Cache Miss (input): $0.27 / 1M tokens
-        # Output: $1.10 / 1M tokens
-        # Cache Hit (context caching): $0.014 / 1M tokens
-        "input": 0.27,
-        "output": 1.10,
-        "cache": 0.014,
+        "input": 0.22,
+        "output": 0.66,
+        "cache": 0.007,
     },
     "openai": {
         # Referência padrão OpenAI gpt-4o-mini
@@ -31,7 +33,7 @@ PROVIDER_PRECOS: Dict[str, Dict[str, float]] = {
 # Modelos padrão para cada provider
 DEFAULT_MODELS = {
     "gemini": "gemini-2.5-flash",
-    "deepseek": "deepseek-chat",
+    "deepseek": "deepseek-v4-flash",
     "openai": "gpt-4o-mini",
 }
 
@@ -42,10 +44,10 @@ DEFAULT_FALLBACKS = {
     "openai": [],
 }
 
-# Endpoints base padrão
+# Endpoints base padrão (o endpoint /chat/completions é anexado no providers.py)
 DEFAULT_BASE_URLS = {
     "gemini": "https://generativelanguage.googleapis.com/v1beta/models",
-    "deepseek": "https://api.deepseek.com/v1",
+    "deepseek": "https://api.deepseek.com",
     "openai": "https://api.openai.com/v1",
 }
 
@@ -78,21 +80,3 @@ TOOL_DEFINITION_NEUTRA: Dict[str, Any] = {
     }
 }
 
-# Compatibilidade retroativa com W1a (gemini_client)
-API_BASE_URL = DEFAULT_BASE_URLS["gemini"]
-MODELOS_PADRAO = [DEFAULT_MODELS["gemini"]] + DEFAULT_FALLBACKS["gemini"]
-PRECOS_PADRAO = PROVIDER_PRECOS["gemini"]
-TOOL_DECLARATION = {
-    "name": TOOL_DEFINITION_NEUTRA["name"],
-    "description": TOOL_DEFINITION_NEUTRA["description"],
-    "parameters": {
-        "type": "OBJECT",
-        "properties": {
-            "comando": {
-                "type": "STRING",
-                "description": TOOL_DEFINITION_NEUTRA["parameters"]["properties"]["comando"]["description"]
-            }
-        },
-        "required": TOOL_DEFINITION_NEUTRA["parameters"]["required"]
-    }
-}
