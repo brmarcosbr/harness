@@ -42,12 +42,12 @@ def test_mensagens_para_gemini_contents_completo():
             "role": "model",
             "text": "Executando...",
             "tool_calls": [
-                {"id": "call_0", "name": "executar_comando", "args": {"comando": "dir"}}
+                {"id": "call_abc_123", "name": "executar_comando", "args": {"comando": "dir"}}
             ]
         },
         {
             "role": "tool",
-            "tool_call_id": "call_0",
+            "tool_call_id": "call_abc_123",
             "name": "executar_comando",
             "resultado": {"stdout": "arquivo.txt", "stderr": "", "codigo_saida": 0}
         }
@@ -63,17 +63,20 @@ def test_mensagens_para_gemini_contents_completo():
     assert contents[1]["parts"][0] == {"text": "Executando..."}
     assert contents[1]["parts"][1] == {
         "functionCall": {
+            "id": "call_abc_123",
             "name": "executar_comando",
             "args": {"comando": "dir"}
         }
     }
 
-    assert contents[2]["role"] == "function"
+    # No Gemini 3: resposta de tool usa role "user" com functionResponse contendo "id"
+    assert contents[2]["role"] == "user"
     assert contents[2]["parts"][0]["functionResponse"]["name"] == "executar_comando"
+    assert contents[2]["parts"][0]["functionResponse"]["id"] == "call_abc_123"
     assert contents[2]["parts"][0]["functionResponse"]["response"]["stdout"] == "arquivo.txt"
 
 
-def test_normalizar_resposta_gemini():
+def test_normalizar_resposta_gemini_com_id_real():
     data = {
         "candidates": [
             {
@@ -82,6 +85,7 @@ def test_normalizar_resposta_gemini():
                         {"text": "Vou listar: "},
                         {
                             "functionCall": {
+                                "id": "call_gemini_real_999",
                                 "name": "executar_comando",
                                 "args": {"comando": "dir"}
                             }
@@ -98,11 +102,11 @@ def test_normalizar_resposta_gemini():
             "cachedContentTokenCount": 50
         }
     }
-    resp = normalizar_resposta_gemini(data, "gemini-2.5-flash")
+    resp = normalizar_resposta_gemini(data, "gemini-3.8-flash")
     assert resp.text == "Vou listar: "
     assert len(resp.tool_calls) == 1
     assert resp.tool_calls[0] == {
-        "id": "call_0",
+        "id": "call_gemini_real_999",
         "name": "executar_comando",
         "args": {"comando": "dir"}
     }
@@ -112,7 +116,32 @@ def test_normalizar_resposta_gemini():
         "total": 245,
         "cached": 50
     }
-    assert resp.modelo == "gemini-2.5-flash"
+    assert resp.modelo == "gemini-3.8-flash"
+
+
+def test_normalizar_resposta_gemini_fallback_id():
+    # Quando o functionCall não traz "id", deve gerar fallback "call_0"
+    data = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "functionCall": {
+                                "name": "executar_comando",
+                                "args": {"comando": "dir"}
+                            }
+                        }
+                    ],
+                    "role": "model"
+                }
+            }
+        ]
+    }
+    resp = normalizar_resposta_gemini(data, "gemini-3.8-flash")
+    assert len(resp.tool_calls) == 1
+    assert resp.tool_calls[0]["id"] == "call_0"
+
 
 
 def test_mensagens_para_openai_completo():

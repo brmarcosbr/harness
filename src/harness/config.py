@@ -13,9 +13,11 @@ from typing import Any, Dict
 # NOTA: O custo calculado pelo harness é uma estimativa baseada nos valores OFF-PEAK.
 PROVIDER_PRECOS: Dict[str, Dict[str, float]] = {
     "gemini": {
-        "input": 0.30,
-        "output": 2.50,
-        "cache": 0.03,
+        # Preços gemini-3.8-flash: promoção até 31/12/2026; dobra a partir de 01/01/2027
+        # (input 1.50, output 7.50, cache 0.15) — página ai.google.dev/pricing
+        "input": 0.75,
+        "output": 3.75,
+        "cache": 0.075,
     },
     "deepseek": {
         "input": 0.22,
@@ -32,14 +34,14 @@ PROVIDER_PRECOS: Dict[str, Dict[str, float]] = {
 
 # Modelos padrão para cada provider
 DEFAULT_MODELS = {
-    "gemini": "gemini-2.5-flash",
+    "gemini": "gemini-3.8-flash",
     "deepseek": "deepseek-v4-flash",
     "openai": "gpt-4o-mini",
 }
 
 # Fallbacks padrão
 DEFAULT_FALLBACKS = {
-    "gemini": ["gemini-2.0-flash"],
+    "gemini": ["gemini-3.6-flash"],
     "deepseek": [],
     "openai": [],
 }

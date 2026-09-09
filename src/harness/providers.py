@@ -90,8 +90,8 @@ def mensagens_para_gemini_contents(mensagens: List[Dict[str, Any]]) -> List[Dict
     """
     Função pura que converte mensagens no formato neutro do harness para o formato contents da Gemini.
     - user: {"role": "user", "parts": [{"text": ...}]}
-    - model: {"role": "model", "parts": [{"text": ...}, {"functionCall": ...}]}
-    - tool: {"role": "function", "parts": [{"functionResponse": {"name": ..., "response": ...}}]}
+    - model: {"role": "model", "parts": [{"text": ...}, {"functionCall": {"id": ..., "name": ..., "args": ...}}]}
+    - tool: {"role": "user", "parts": [{"functionResponse": {"name": ..., "response": ..., "id": ...}}]}
     """
     contents: List[Dict[str, Any]] = []
 
@@ -111,12 +111,20 @@ def mensagens_para_gemini_contents(mensagens: List[Dict[str, Any]]) -> List[Dict
                 parts.append({"text": text})
 
             for tc in msg.get("tool_calls", []):
-                parts.append({
-                    "functionCall": {
-                        "name": tc["name"],
-                        "args": tc.get("args", {})
-                    }
-                })
+                fc_part: Dict[str, Any] = {
+                    "name": tc["name"],
+                    "args": tc.get("args", {})
+                }
+                if tc.get("id"):
+                    fc_part["id"] = tc["id"]
+
+                part_dict: Dict[str, Any] = {
+                    "functionCall": fc_part
+                }
+                if tc.get("thought_signature"):
+                    part_dict["thoughtSignature"] = tc["thought_signature"]
+
+                parts.append(part_dict)
 
             contents.append({
                 "role": "model",
@@ -124,14 +132,18 @@ def mensagens_para_gemini_contents(mensagens: List[Dict[str, Any]]) -> List[Dict
             })
 
         elif role == "tool":
+            fr_part: Dict[str, Any] = {
+                "name": msg.get("name", ""),
+                "response": msg.get("resultado", {})
+            }
+            if msg.get("tool_call_id"):
+                fr_part["id"] = msg["tool_call_id"]
+
             contents.append({
-                "role": "function",
+                "role": "user",
                 "parts": [
                     {
-                        "functionResponse": {
-                            "name": msg.get("name", ""),
-                            "response": msg.get("resultado", {})
-                        }
+                        "functionResponse": fr_part
                     }
                 ]
             })
@@ -142,7 +154,8 @@ def mensagens_para_gemini_contents(mensagens: List[Dict[str, Any]]) -> List[Dict
 def normalizar_resposta_gemini(data: Dict[str, Any], modelo: str) -> ProviderResponse:
     """
     Função pura que extrai e normaliza texto, tool calls e métricas de usage da resposta da Gemini.
-    Gera IDs de tool call ordenados ("call_0", "call_1", etc.).
+    Extrai o ID real retornado pela API (fc.get("id")), usando fallback ordenado ("call_0", etc.) se ausente.
+    Preserva thoughtSignature quando emitido por modelos Gemini 3.
     """
     candidates = data.get("candidates", [])
     if not candidates:
@@ -161,15 +174,23 @@ def normalizar_resposta_gemini(data: Dict[str, Any], modelo: str) -> ProviderRes
     for p in parts:
         if isinstance(p, dict) and "functionCall" in p:
             fc = p["functionCall"]
-            tool_calls.append({
-                "id": f"call_{fc_index}",
+            call_id = fc.get("id") or f"call_{fc_index}"
+            tc_dict: Dict[str, Any] = {
+                "id": call_id,
                 "name": fc.get("name", ""),
                 "args": fc.get("args", {})
-            })
+            }
+            if p.get("thoughtSignature"):
+                tc_dict["thought_signature"] = p["thoughtSignature"]
+            elif fc.get("thoughtSignature"):
+                tc_dict["thought_signature"] = fc["thoughtSignature"]
+
+            tool_calls.append(tc_dict)
             fc_index += 1
 
     usage = extrair_metricas_usage(data.get("usageMetadata", {}))
     return ProviderResponse(text=texto, tool_calls=tool_calls, usage=usage, modelo=modelo)
+
 
 
 # ============================================================================
