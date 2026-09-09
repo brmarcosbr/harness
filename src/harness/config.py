@@ -58,27 +58,10 @@ COMMAND_TIMEOUT_SECONDS = 30
 
 SYSTEM_PROMPT = (
     "Você é um assistente operacional em um ambiente Windows. "
-    "Você tem acesso à ferramenta 'executar_comando' para executar comandos no sistema. "
-    "Ao usar 'executar_comando', forneça comandos compatíveis com o terminal Windows (PowerShell ou CMD). "
+    "Você tem acesso a quatro ferramentas: 'executar_comando', 'ler_arquivo', 'escrever_arquivo' e 'buscar_no_projeto'. "
+    "A ferramenta 'executar_comando' executa exclusivamente no shell cmd.exe do Windows "
+    "(NÃO use comandos PowerShell como Get-ChildItem, pois eles falham no cmd.exe). "
+    "Ao usar 'executar_comando', prefira comandos cmd simples e evite apagar arquivos do projeto sem necessidade. "
     "Cumpra os pedidos do usuário de forma concisa e direta."
 )
-
-# Definição neutra única da ferramenta executar_comando
-TOOL_DEFINITION_NEUTRA: Dict[str, Any] = {
-    "name": "executar_comando",
-    "description": (
-        "Executa um comando de linha de comando no terminal do Windows (PowerShell/CMD) "
-        "no diretório atual de trabalho. Retorna stdout, stderr e o código de saída."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "comando": {
-                "type": "string",
-                "description": "O comando de terminal a ser executado no Windows."
-            }
-        },
-        "required": ["comando"]
-    }
-}
 

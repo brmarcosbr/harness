@@ -11,9 +11,9 @@ from harness.config import (
     DEFAULT_FALLBACKS,
     DEFAULT_MODELS,
     PROVIDER_PRECOS,
-    TOOL_DEFINITION_NEUTRA,
 )
 from harness.errors import HarnessError
+from harness.tools import TOOLS
 from harness.usage import extrair_metricas_usage
 
 
@@ -61,27 +61,34 @@ def modelos_a_tentar(modelo_inicial: str, fallbacks: Optional[List[str]] = None)
     return lista
 
 
-def gemini_tool_schema() -> List[Dict[str, Any]]:
-    """Gera o schema de tools no formato da API Gemini a partir da definição neutra."""
+def gemini_tool_schema(tools: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+    """Gera o schema de tools no formato da API Gemini para todas as tools informadas."""
+    lista_tools = tools if tools is not None else TOOLS
+    declaracoes = []
+
+    for tool in lista_tools:
+        params = tool.get("parameters", {})
+        props = params.get("properties", {})
+        gemini_props = {
+            k: {
+                "type": v["type"].upper(),
+                "description": v.get("description", "")
+            }
+            for k, v in props.items()
+        }
+        declaracoes.append({
+            "name": tool["name"],
+            "description": tool["description"],
+            "parameters": {
+                "type": "OBJECT",
+                "properties": gemini_props,
+                "required": params.get("required", [])
+            }
+        })
+
     return [
         {
-            "function_declarations": [
-                {
-                    "name": TOOL_DEFINITION_NEUTRA["name"],
-                    "description": TOOL_DEFINITION_NEUTRA["description"],
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            k: {
-                                "type": v["type"].upper(),
-                                "description": v.get("description", "")
-                            }
-                            for k, v in TOOL_DEFINITION_NEUTRA["parameters"]["properties"].items()
-                        },
-                        "required": TOOL_DEFINITION_NEUTRA["parameters"].get("required", [])
-                    }
-                }
-            ]
+            "function_declarations": declaracoes
         }
     ]
 
@@ -197,17 +204,19 @@ def normalizar_resposta_gemini(data: Dict[str, Any], modelo: str) -> ProviderRes
 # Funções puras de conversão e normalização — OPENAI-COMPAT
 # ============================================================================
 
-def openai_tool_schema() -> List[Dict[str, Any]]:
-    """Gera o schema de tools no formato OpenAI a partir da definição neutra."""
+def openai_tool_schema(tools: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+    """Gera o schema de tools no formato OpenAI para todas as tools informadas."""
+    lista_tools = tools if tools is not None else TOOLS
     return [
         {
             "type": "function",
             "function": {
-                "name": TOOL_DEFINITION_NEUTRA["name"],
-                "description": TOOL_DEFINITION_NEUTRA["description"],
-                "parameters": TOOL_DEFINITION_NEUTRA["parameters"]
+                "name": tool["name"],
+                "description": tool["description"],
+                "parameters": tool.get("parameters", {})
             }
         }
+        for tool in lista_tools
     ]
 
 

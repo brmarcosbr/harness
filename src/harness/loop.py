@@ -1,5 +1,6 @@
 """Módulo do loop multi-turno do Agent Harness."""
 
+import inspect
 import os
 from typing import Any, Callable, Dict, List, Optional
 from harness.config import (
@@ -8,12 +9,26 @@ from harness.config import (
 )
 from harness.errors import HarnessError
 from harness.providers import Provider
-from harness.tools import executar_comando
+from harness.tools import TOOL_REGISTRY, executar_comando, truncar_saida
 from harness.usage import calcular_custo
 
-TOOL_REGISTRY: Dict[str, Callable[[str], Dict[str, Any]]] = {
-    "executar_comando": executar_comando
-}
+
+def _processar_e_truncar_resultado(resultado: Any) -> Any:
+    """Aplica truncamento de saída em strings de resultado de ferramentas."""
+    if isinstance(resultado, dict):
+        res_truncado = {}
+        for k, v in resultado.items():
+            if isinstance(v, str):
+                res_truncado[k] = truncar_saida(v)
+            elif isinstance(v, list):
+                # Se for lista de resultados (ex: buscar_no_projeto)
+                res_truncado[k] = [truncar_saida(item) if isinstance(item, str) else item for item in v]
+            else:
+                res_truncado[k] = v
+        return res_truncado
+    elif isinstance(resultado, str):
+        return truncar_saida(resultado)
+    return resultado
 
 
 def executar_loop(
@@ -95,14 +110,36 @@ def executar_loop(
                 tool_func = TOOL_REGISTRY.get(func_name)
 
                 if tool_func is not None:
-                    comando = func_args.get("comando", "")
-                    print(f"[Tool Exec] Executando comando: {comando}")
-                    resultado_tool = tool_func(comando)
-                    print(
-                        f"[Tool Output] Código: {resultado_tool['codigo_saida']} | "
-                        f"Stdout: {len(resultado_tool['stdout'])} chars | "
-                        f"Stderr: {len(resultado_tool['stderr'])} chars"
-                    )
+                    print(f"[Tool Exec] Executando '{func_name}' com args: {func_args}")
+                    try:
+                        # Passa func_args como kwargs se for dict
+                        if isinstance(func_args, dict):
+                            resultado_raw = tool_func(**func_args)
+                        else:
+                            resultado_raw = tool_func(func_args)
+                    except TypeError:
+                        # Fallback se a assinatura esperar comando posicional
+                        if "comando" in func_args and len(func_args) == 1:
+                            resultado_raw = tool_func(func_args["comando"])
+                        else:
+                            resultado_raw = {"sucesso": False, "erro": f"Argumentos inválidos para a função {func_name}: {func_args}"}
+                    except Exception as e:
+                        resultado_raw = {"sucesso": False, "erro": f"Erro na execução da tool '{func_name}': {e}"}
+
+                    # Trunca saídas da tool para controle de contexto
+                    resultado_tool = _processar_e_truncar_resultado(resultado_raw)
+
+                    # Print descritivo da saída
+                    if isinstance(resultado_tool, dict):
+                        if "codigo_saida" in resultado_tool:
+                            print(
+                                f"[Tool Output] Código: {resultado_tool['codigo_saida']} | "
+                                f"Stdout: {len(str(resultado_tool.get('stdout', '')))} chars | "
+                                f"Stderr: {len(str(resultado_tool.get('stderr', '')))} chars"
+                            )
+                        else:
+                            sucesso_str = "OK" if resultado_tool.get("sucesso", True) else "FALHA"
+                            print(f"[Tool Output] Status: {sucesso_str} | Chaves: {list(resultado_tool.keys())}")
 
                     # Anexa resposta da ferramenta ao histórico neutro
                     mensagens.append({

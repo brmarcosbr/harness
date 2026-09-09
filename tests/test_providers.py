@@ -1,7 +1,7 @@
 """Testes unitários para conversões de providers (funções puras, sem rede)."""
 
 import json
-from harness.config import TOOL_DEFINITION_NEUTRA
+from harness.tools import TOOLS
 from harness.providers import (
     gemini_tool_schema,
     mensagens_para_gemini_contents,
@@ -18,21 +18,29 @@ def test_gemini_tool_schema():
     schema = gemini_tool_schema()
     assert len(schema) == 1
     assert "function_declarations" in schema[0]
-    fd = schema[0]["function_declarations"][0]
-    assert fd["name"] == "executar_comando"
-    assert fd["parameters"]["type"] == "OBJECT"
-    assert "comando" in fd["parameters"]["properties"]
-    assert fd["parameters"]["properties"]["comando"]["type"] == "STRING"
+    declaracoes = schema[0]["function_declarations"]
+    assert len(declaracoes) == 4
+    nomes = [d["name"] for d in declaracoes]
+    assert nomes == ["executar_comando", "ler_arquivo", "escrever_arquivo", "buscar_no_projeto"]
+    
+    # Valida parâmetros da primeira tool
+    fd0 = declaracoes[0]
+    assert fd0["name"] == "executar_comando"
+    assert fd0["parameters"]["type"] == "OBJECT"
+    assert "comando" in fd0["parameters"]["properties"]
+    assert fd0["parameters"]["properties"]["comando"]["type"] == "STRING"
 
 
 def test_openai_tool_schema():
     schema = openai_tool_schema()
-    assert len(schema) == 1
-    assert schema[0]["type"] == "function"
-    fn = schema[0]["function"]
-    assert fn["name"] == "executar_comando"
-    assert fn["parameters"]["type"] == "object"
-    assert "comando" in fn["parameters"]["properties"]
+    assert len(schema) == 4
+    nomes = [item["function"]["name"] for item in schema]
+    assert nomes == ["executar_comando", "ler_arquivo", "escrever_arquivo", "buscar_no_projeto"]
+
+    fn0 = schema[0]["function"]
+    assert fn0["name"] == "executar_comando"
+    assert fn0["parameters"]["type"] == "object"
+    assert "comando" in fn0["parameters"]["properties"]
 
 
 def test_mensagens_para_gemini_contents_completo():

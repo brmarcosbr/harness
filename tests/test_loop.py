@@ -135,3 +135,46 @@ def test_loop_provider_lanca_harness_error():
         executar_loop(tarefa="teste erro", provider=provider)
     assert "Erro simulado de conexão ou API" in str(exc_info.value)
 
+
+def test_loop_executa_ler_arquivo_com_truncamento(monkeypatch, capsys):
+    conteudo_muito_longo = "B" * 5000
+
+    def fake_ler_arquivo(caminho: str, base_dir=None):
+        return {
+            "sucesso": True,
+            "conteudo": conteudo_muito_longo,
+            "tamanho_bytes": 5000
+        }
+
+    monkeypatch.setitem(
+        __import__("harness.loop", fromlist=["TOOL_REGISTRY"]).TOOL_REGISTRY,
+        "ler_arquivo",
+        fake_ler_arquivo
+    )
+
+    resp1 = ProviderResponse(
+        text="",
+        tool_calls=[{"id": "call_ler", "name": "ler_arquivo", "args": {"caminho": "arquivo.txt"}}],
+        usage={"prompt": 50, "completion": 10, "total": 60, "cached": 0},
+        modelo="fake-model"
+    )
+    resp2 = ProviderResponse(
+        text="Arquivo lido com sucesso.",
+        tool_calls=[],
+        usage={"prompt": 100, "completion": 20, "total": 120, "cached": 0},
+        modelo="fake-model"
+    )
+
+    provider = FakeProvider(respostas=[resp1, resp2])
+    historico = executar_loop(tarefa="leia o arquivo", provider=provider, max_turns=3)
+
+    assert len(historico) == 4
+    tool_msg = historico[2]
+    assert tool_msg["role"] == "tool"
+    assert tool_msg["name"] == "ler_arquivo"
+    # Verifica que o truncamento foi aplicado no conteúdo armazenado no histórico
+    conteudo_salvo = tool_msg["resultado"]["conteudo"]
+    assert len(conteudo_salvo) < 5000
+    assert "[... truncado: 5000 caracteres]" in conteudo_salvo
+
+
