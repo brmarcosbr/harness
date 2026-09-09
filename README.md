@@ -6,6 +6,8 @@
 ![Tests](https://img.shields.io/badge/tests-58%2F58%20passing-brightgreen)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 ![Zero Libs](https://img.shields.io/badge/external--deps-zero-informational)
+![CI](https://github.com/brmarcosbr/harness/actions/workflows/ci.yml/badge.svg)
+
 
 O **Agent Harness** é uma implementação em Python puro (sem frameworks pesados ou dependências externas em runtime) de um harness para agentes de engenharia de software autônomos. Ele executa loops multi-turno com resolução de ferramentas (*tool calling*), suporta múltiplos provedores (Google Gemini e OpenAI-compatible / DeepSeek) e gerencia o contexto da sessão para viabilizar e mensurar a eficiência de **Context Caching**.
 
