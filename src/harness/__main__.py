@@ -3,6 +3,7 @@
 import argparse
 import os
 import sys
+from harness.config import MAX_TURNS
 from harness.env import carregar_env
 from harness.errors import HarnessError
 from harness.loop import executar_loop
@@ -47,6 +48,12 @@ def main():
         default="liste os arquivos desta pasta",
         help="Instrução a ser executada pelo agente."
     )
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=MAX_TURNS,
+        help=f"Número máximo de turnos de execução (padrão: {MAX_TURNS})."
+    )
     args = parser.parse_args()
 
     provider_name = args.provider.lower()
@@ -73,7 +80,7 @@ def main():
             modelo=args.modelo,
             base_url=os.environ.get("HARNESS_BASE_URL", None)
         )
-        executar_loop(tarefa=args.tarefa, provider=provider)
+        executar_loop(tarefa=args.tarefa, provider=provider, max_turns=args.max_turns)
     except HarnessError as e:
         print(f"ERRO: {e}", file=sys.stderr)
         sys.exit(1)

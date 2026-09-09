@@ -178,3 +178,70 @@ def test_loop_executa_ler_arquivo_com_truncamento(monkeypatch, capsys):
     assert "[... truncado: 5000 caracteres]" in conteudo_salvo
 
 
+def test_loop_regressao_max_turns_multi_passo(monkeypatch, capsys):
+    """
+    Teste de regressão: tarefas multi-passo (3 tool calls sequenciais + resposta final).
+    - Com max_turns=8, conclui com 7 mensagens neutras e NÃO exibe aviso de não concluído.
+    - Com max_turns=3 no mesmo cenário, estoura os turnos e exibe o aviso.
+    """
+    # Mock dos handlers no registry para isolamento sem efeitos colaterais
+    registry = __import__("harness.loop", fromlist=["TOOL_REGISTRY"]).TOOL_REGISTRY
+    monkeypatch.setitem(registry, "executar_comando", lambda comando: {"stdout": "ok", "stderr": "", "codigo_saida": 0})
+    monkeypatch.setitem(registry, "ler_arquivo", lambda caminho: {"sucesso": True, "conteudo": "print('ok')", "tamanho_bytes": 11})
+    monkeypatch.setitem(registry, "buscar_no_projeto", lambda padrao, extensao=None: {"sucesso": True, "total": 1, "limite_atingido": False, "resultados": ["w2_teste.py:1:print('ok')"]})
+
+    # Respostas mock do modelo: 3 chamadas de ferramentas sequenciais seguidas da síntese
+    resp_tool1 = ProviderResponse(
+        text="",
+        tool_calls=[{"id": "call_1", "name": "executar_comando", "args": {"comando": "python w2_teste.py"}}],
+        usage={"prompt": 50, "completion": 15, "total": 65, "cached": 0},
+        modelo="fake-model"
+    )
+    resp_tool2 = ProviderResponse(
+        text="",
+        tool_calls=[{"id": "call_2", "name": "ler_arquivo", "args": {"caminho": "w2_teste.py"}}],
+        usage={"prompt": 70, "completion": 15, "total": 85, "cached": 0},
+        modelo="fake-model"
+    )
+    resp_tool3 = ProviderResponse(
+        text="",
+        tool_calls=[{"id": "call_3", "name": "buscar_no_projeto", "args": {"padrao": "harness"}}],
+        usage={"prompt": 90, "completion": 15, "total": 105, "cached": 0},
+        modelo="fake-model"
+    )
+    resp_final = ProviderResponse(
+        text="Tarefa concluída com sucesso: arquivo criado, executado e padrão encontrado.",
+        tool_calls=[],
+        usage={"prompt": 120, "completion": 30, "total": 150, "cached": 0},
+        modelo="fake-model"
+    )
+
+    # 1. Execução com max_turns=8 (deve concluir com sucesso)
+    provider_8 = FakeProvider(respostas=[resp_tool1, resp_tool2, resp_tool3, resp_final])
+    historico_8 = executar_loop(tarefa="tarefa multi-passo", provider=provider_8, max_turns=8)
+    captured_8 = capsys.readouterr()
+
+    # Histórico de 8 mensagens: user + 3x(model + tool) + model final (1 + 6 + 1 = 8)
+    assert len(historico_8) == 8
+    assert historico_8[0]["role"] == "user"
+    assert historico_8[1]["role"] == "model" and historico_8[1]["tool_calls"][0]["name"] == "executar_comando"
+    assert historico_8[2]["role"] == "tool" and historico_8[2]["name"] == "executar_comando"
+    assert historico_8[3]["role"] == "model" and historico_8[3]["tool_calls"][0]["name"] == "ler_arquivo"
+    assert historico_8[4]["role"] == "tool" and historico_8[4]["name"] == "ler_arquivo"
+    assert historico_8[5]["role"] == "model" and historico_8[5]["tool_calls"][0]["name"] == "buscar_no_projeto"
+    assert historico_8[6]["role"] == "tool" and historico_8[6]["name"] == "buscar_no_projeto"
+    assert historico_8[7]["role"] == "model" and historico_8[7]["text"].startswith("Tarefa concluída")
+    assert "[ATENCAO] Nao concluido: max_turns atingido sem resposta final" not in captured_8.out
+    assert "Turnos utilizados: 4 de 8" in captured_8.out
+
+    # 2. Execução com max_turns=3 no mesmo cenário (deve estourar o limite e mostrar o aviso)
+    provider_3 = FakeProvider(respostas=[resp_tool1, resp_tool2, resp_tool3, resp_final])
+    historico_3 = executar_loop(tarefa="tarefa multi-passo", provider=provider_3, max_turns=3)
+    captured_3 = capsys.readouterr()
+
+    assert len(historico_3) == 7  # user + 3x(model + tool) = 1 + 6 = 7, sem o model final
+    assert "[ATENCAO] Nao concluido: max_turns atingido sem resposta final" in captured_3.out
+    assert "Turnos utilizados: 3 de 3" in captured_3.out
+
+
+

@@ -53,7 +53,10 @@ DEFAULT_BASE_URLS = {
     "openai": "https://api.openai.com/v1",
 }
 
-MAX_TURNS = 3
+# Cada turno é UMA chamada ao modelo; tarefas de codificação usam vários turnos
+# de tool + pelo menos 1 final para sintetizar (o limite de 3 era herança do spike
+# e corta tarefas legítimas; o modelo para sozinho ao responder texto final).
+MAX_TURNS = 8
 COMMAND_TIMEOUT_SECONDS = 30
 
 SYSTEM_PROMPT = (
