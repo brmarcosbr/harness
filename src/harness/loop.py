@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import inspect
 import os
 import time
@@ -21,6 +22,13 @@ from harness.errors import HarnessError
 from harness.providers import Provider
 from harness.tools import TOOL_REGISTRY, executar_comando, truncar_saida
 from harness.usage import calcular_custo
+
+
+@dataclass
+class LoopResult:
+    """Resultado estruturado da execução do loop do Agent Harness."""
+    historico: List[Dict[str, Any]]
+    metricas: Dict[str, Any]
 
 
 def _processar_e_truncar_resultado(resultado: Any) -> Any:
@@ -47,11 +55,11 @@ def executar_loop(
     max_turns: int = MAX_TURNS,
     contexto_projeto: Optional[str] = None,
     cache_habilitado: bool = True,
-) -> List[Dict[str, Any]]:
+) -> LoopResult:
     """
     Executa o loop de harness multi-turno com o Provider configurado.
     Utiliza formato neutro de mensagens internamente.
-    Retorna o histórico neutro de mensagens ao final.
+    Retorna LoopResult contendo o histórico e métricas consolidadas.
     """
     print("=" * 60)
     print("AGENT HARNESS")
@@ -253,4 +261,19 @@ def executar_loop(
     print(f"Modelo final: {provider.modelo_ativo}")
     print("=" * 60)
 
-    return mensagens
+    metricas_resultado = {
+        "turnos_usados": turnos_usados,
+        "prompt_tokens": total_prompt_tokens,
+        "completion_tokens": total_completion_tokens,
+        "cached_tokens": total_cached_tokens,
+        "total_tokens": total_prompt_tokens + total_completion_tokens,
+        "custo_real": custo_real,
+        "custo_sem_cache": custo_sem_cache,
+        "economia": economia,
+        "economia_pct": porcentagem,
+        "cache_habilitado": cache_habilitado,
+        "tarefa": tarefa,
+        "modelo": provider.modelo_ativo,
+    }
+
+    return LoopResult(historico=mensagens, metricas=metricas_resultado)

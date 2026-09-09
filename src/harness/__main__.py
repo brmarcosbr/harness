@@ -67,6 +67,11 @@ def main():
         help="Desabilita estabilidade do prefixo de contexto para forçar cache miss a cada turno."
     )
     parser.add_argument(
+        "--bench",
+        action="store_true",
+        help="Executa a suíte de benchmark de tarefas com medição de cache ON vs OFF."
+    )
+    parser.add_argument(
         "--max-turns",
         type=int,
         default=MAX_TURNS,
@@ -119,19 +124,39 @@ def main():
         sys.exit(1)
 
     try:
-        provider = criar_provider(
-            provider_name=provider_name,
-            api_key=api_key,
-            modelo=args.modelo,
-            base_url=os.environ.get("HARNESS_BASE_URL", None)
-        )
-        executar_loop(
-            tarefa=args.tarefa,
-            provider=provider,
-            max_turns=args.max_turns,
-            contexto_projeto=contexto_conteudo,
-            cache_habilitado=cache_habilitado,
-        )
+        if args.bench:
+            if args.no_cache:
+                print(
+                    "[AVISO] --no-cache ignorado no modo --bench: o benchmark avalia ambos os regimes (ON e OFF).",
+                    file=sys.stderr
+                )
+
+            from harness.bench import imprimir_tabela, rodar_benchmark
+
+            def factory():
+                return criar_provider(
+                    provider_name=provider_name,
+                    api_key=api_key,
+                    modelo=args.modelo,
+                    base_url=os.environ.get("HARNESS_BASE_URL", None)
+                )
+
+            resultados = rodar_benchmark(provider_factory=factory, max_turns=args.max_turns)
+            imprimir_tabela(resultados)
+        else:
+            provider = criar_provider(
+                provider_name=provider_name,
+                api_key=api_key,
+                modelo=args.modelo,
+                base_url=os.environ.get("HARNESS_BASE_URL", None)
+            )
+            executar_loop(
+                tarefa=args.tarefa,
+                provider=provider,
+                max_turns=args.max_turns,
+                contexto_projeto=contexto_conteudo,
+                cache_habilitado=cache_habilitado,
+            )
     except HarnessError as e:
         print(f"ERRO: {e}", file=sys.stderr)
         sys.exit(1)

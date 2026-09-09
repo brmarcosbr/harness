@@ -64,7 +64,14 @@ def test_loop_fluxo_completo_com_tool(monkeypatch, capsys):
     )
 
     provider = FakeProvider(respostas=[resp1, resp2])
-    historico = executar_loop(tarefa="liste os arquivos", provider=provider, max_turns=3)
+    resultado = executar_loop(tarefa="liste os arquivos", provider=provider, max_turns=3)
+    historico = resultado.historico
+
+    # Verificações de métricas estruturadas
+    assert "turnos_usados" in resultado.metricas
+    assert resultado.metricas["turnos_usados"] == 2
+    assert resultado.metricas["custo_real"] > 0
+    assert resultado.metricas["tarefa"] == "liste os arquivos"
 
     # Verificações do histórico (4 mensagens neutras)
     assert len(historico) == 4
@@ -166,7 +173,8 @@ def test_loop_executa_ler_arquivo_com_truncamento(monkeypatch, capsys):
     )
 
     provider = FakeProvider(respostas=[resp1, resp2])
-    historico = executar_loop(tarefa="leia o arquivo", provider=provider, max_turns=3)
+    resultado = executar_loop(tarefa="leia o arquivo", provider=provider, max_turns=3)
+    historico = resultado.historico
 
     assert len(historico) == 4
     tool_msg = historico[2]
@@ -218,7 +226,8 @@ def test_loop_regressao_max_turns_multi_passo(monkeypatch, capsys):
 
     # 1. Execução com max_turns=8 (deve concluir com sucesso)
     provider_8 = FakeProvider(respostas=[resp_tool1, resp_tool2, resp_tool3, resp_final])
-    historico_8 = executar_loop(tarefa="tarefa multi-passo", provider=provider_8, max_turns=8)
+    resultado_8 = executar_loop(tarefa="tarefa multi-passo", provider=provider_8, max_turns=8)
+    historico_8 = resultado_8.historico
     captured_8 = capsys.readouterr()
 
     # Histórico de 8 mensagens: user + 3x(model + tool) + model final (1 + 6 + 1 = 8)
@@ -236,7 +245,8 @@ def test_loop_regressao_max_turns_multi_passo(monkeypatch, capsys):
 
     # 2. Execução com max_turns=3 no mesmo cenário (deve estourar o limite e mostrar o aviso)
     provider_3 = FakeProvider(respostas=[resp_tool1, resp_tool2, resp_tool3, resp_final])
-    historico_3 = executar_loop(tarefa="tarefa multi-passo", provider=provider_3, max_turns=3)
+    resultado_3 = executar_loop(tarefa="tarefa multi-passo", provider=provider_3, max_turns=3)
+    historico_3 = resultado_3.historico
     captured_3 = capsys.readouterr()
 
     assert len(historico_3) == 7  # user + 3x(model + tool) = 1 + 6 = 7, sem o model final
