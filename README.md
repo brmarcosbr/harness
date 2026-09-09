@@ -120,14 +120,14 @@ Quando a flag `--no-cache` é fornecida, um cabeçalho dinâmico contendo timest
 
 O harness disponibiliza 4 ferramentas nativas para o modelo:
 
-1. `executar_comando`: Execução de comandos no terminal local.
-2. `ler_arquivo`: Leitura de arquivos com limite máximo de 100 KB por arquivo.
-3. `escrever_arquivo`: Criação e sobrescrita de arquivos com limite de 200 KB.
-4. `buscar_no_projeto`: Busca recursiva por padrão de nome de arquivo ou termo textual.
+1. `executar_comando`: Execução de comandos no terminal local (`cmd.exe`).
+2. `ler_arquivo`: Leitura de arquivos de texto com limite máximo de 200 KB por arquivo.
+3. `escrever_arquivo`: Criação e sobrescrita de arquivos com limite de 1 MB.
+4. `buscar_no_projeto`: Busca por padrão regex no conteúdo dos arquivos de código/texto do projeto (ignora pastas `.venv`, `__pycache__`, `.git`, `.pytest_cache`, `build` e `dist`; permite filtro por extensão opcional; ignora binários e arquivos maiores que 1 MB; limite máximo de 50 resultados). **Não** busca por nome de arquivo.
 
 ### Medidas de Mitigação Implementadas
 
-- **Blocklist de Comandos Críticos:** Bloqueio de comandos destrutivos perigosos (`rm -rf`, `rmdir /s`, `del /f /s /q`, `format`, `shutdown`, `mkfs`, redirecionamentos para dispositivos de bloco, entre outros).
+- **Blocklist de Comandos Críticos:** Bloqueio via regex dos padrões perigosos mapeados em `PADROES_BLOQUEADOS`: `format`, `diskpart`, `shutdown`, `rd /s` (ou `/q`), `rmdir /s` (ou `/q`), `rm -rf`, `reg delete`, `del /s` (ou `/f` ou `/q`), `erase /s` (ou `/f` ou `/q`), `cipher /w` e `taskkill /f /im`.
 - **Proteção contra Path Traversal:** Validação estrita via `Path.resolve()` garantindo que nenhum caminho acesse pastas superiores à raiz do projeto (`..` proibido).
 - **Timeouts Rígidos:** Cada execução de comando possui limite padrão de 30 segundos, prevenindo bloqueios em processos interativos ou loops infinitos.
 
@@ -145,17 +145,21 @@ Resultados medidos no modelo `gemini-3.8-flash` com o contexto do repositório (
 
 | Tarefa | Modo | Turnos | Prompt Tokens | Cached Tokens | Custo (USD) | Economia | Sucesso |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **T1: Mapa de Arquivos** | ON | 5 | 184.217 | 130.804 | $0.052799 | 62,6% | SIM |
-| *(exploração e lista)* | OFF | 4 | 146.818 | 0 | $0.112510 | 0,0% | SIM |
-| **T2: Geração com Teste** | ON | 5 | 176.620 | 163.510 | $0.022876 | 82,8% | SIM |
-| *(criação de módulo e pytest)*| OFF | 5 | 176.743 | 0 | $0.133562 | 0,0% | SIM |
-| **T3: Leitura de Módulo** | ON | 6 | 211.947 | 196.185 | $0.027912 | 82,6% | SIM |
-| *(análise de spec)* | OFF | 6 | 212.945 | 0 | $0.161520 | 0,0% | SIM |
+| **T1: Mapa de Módulos** | ON | 5 | 184.217 | 130.804 | $0.052799 | 62,6% | SIM |
+| *(criar bench_mapa.md com módulos de src/harness)* | OFF | 4 | 146.818 | 0 | $0.112510 | 0,0% | SIM |
+| **T2: Geração + Teste Próprio** | ON | 5 | 176.620 | 163.510 | $0.022876 | 82,8% | SIM |
+| *(criar bench_math.py + bench_test_math.py e rodar)* | OFF | 5 | 176.743 | 0 | $0.133562 | 0,0% | SIM |
+| **T3: Spec + Teste Próprio** | ON | 6 | 211.947 | 196.185 | $0.027912 | 82,6% | SIM |
+| *(criar bench_contador.py + bench_test_contador.py e rodar)* | OFF | 6 | 212.945 | 0 | $0.161520 | 0,0% | SIM |
 | **TOTAL CACHE ON** | **ON** | **16** | **572.784** | **490.499** | **$0.103586** | **76,2%** | **3/3** |
 | **TOTAL CACHE OFF** | **OFF** | **15** | **536.506** | **0** | **$0.407592** | **0,0%** | **3/3** |
 
 ### Metodologia e Transparência
 
+- **Tarefas Avaliadas:**
+  - **T1 (mapa):** Criar `bench_mapa.md` listando cada módulo de `src/harness` com uma frase sobre sua responsabilidade, baseando-se no contexto do repositório e sem alterar arquivos existentes.
+  - **T2 (geracao-com-teste):** Criar `bench_math.py` com função `soma(a, b)` e `bench_test_math.py` com validação de saída não-zero em caso de erro, e executar `python bench_test_math.py`.
+  - **T3 (spec-de-arquivo):** Criar `bench_contador.py` com função `contar_palavras(t)` e `bench_test_contador.py` com casos de teste específicos, e executar `python bench_test_contador.py`.
 - O modelo decide autonomamente a quantidade de turnos para cada tarefa (por exemplo, na T1 o modelo utilizou 5 turnos com cache e 4 turnos sem cache, explorando arquivos de forma independente).
 - Mesmo com variação autônoma de turnos, o custo total foi reduzido de **$0.407592** para **$0.103586**, representando uma **economia real de 76,2%** com todas as 3 tarefas concluídas com sucesso.
 - O cache só passa a atuar a partir do 2º turno de cada tarefa, quando o prefixo inicial da conversa já foi ingerido e reconhecido pelo provedor.
@@ -173,8 +177,8 @@ Resultados medidos no modelo `gemini-3.8-flash` com o contexto do repositório (
 
 ```bash
 # Clone o repositório
-git clone https://github.com/brunobonifacio/agent-harness.git
-cd agent-harness
+git clone https://github.com/brmarcosbr/harness.git
+cd harness
 
 # Crie e ative o ambiente virtual
 python -m venv .venv
