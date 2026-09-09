@@ -22,34 +22,33 @@ def modelos_a_tentar(modelo_inicial: str, fallbacks: Optional[List[str]] = None)
     return lista
 
 
-def carregar_api_key() -> str:
-    """Obtém a GEMINI_API_KEY da variável de ambiente ou de arquivos .env."""
-    if key := os.environ.get("GEMINI_API_KEY"):
-        if key.strip():
-            return key.strip()
-
-    # Busca em .env no diretório atual ou no diretório do usuário
+def carregar_env() -> None:
+    """Carrega variáveis definidas em arquivos .env para os.environ (se não definidas)."""
     candidatos = [
         Path.cwd() / ".env",
         Path.home() / ".env"
     ]
-
     for env_path in candidatos:
         if env_path.is_file():
             try:
                 with open(env_path, "r", encoding="utf-8") as f:
                     for line in f:
                         line = line.strip()
-                        if not line or line.startswith("#"):
+                        if not line or line.startswith("#") or "=" not in line:
                             continue
-                        if line.startswith("GEMINI_API_KEY="):
-                            val = line.split("=", 1)[1].strip().strip('"').strip("'")
-                            if val:
-                                return val
+                        chave, val = line.split("=", 1)
+                        chave = chave.strip()
+                        val = val.strip().strip('"').strip("'")
+                        if chave and chave not in os.environ and val:
+                            os.environ[chave] = val
             except Exception:
                 pass
 
-    return ""
+
+def carregar_api_key() -> str:
+    """Obtém a GEMINI_API_KEY da variável de ambiente ou de arquivos .env."""
+    carregar_env()
+    return os.environ.get("GEMINI_API_KEY", "").strip()
 
 
 def chamar_gemini(

@@ -1,45 +1,43 @@
 """Módulo do loop multi-turno do Agent Harness."""
 
 import os
-import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from harness.config import (
     MAX_TURNS,
-    MODELOS_PADRAO,
-    PRECOS_PADRAO,
     SYSTEM_PROMPT,
 )
-from harness.gemini_client import chamar_gemini
-from harness.resposta import extrair_texto_e_tool_calls, montar_function_response
+from harness.errors import HarnessError
+from harness.providers import Provider
 from harness.tools import executar_comando
-from harness.usage import calcular_custo, extrair_metricas_usage
+from harness.usage import calcular_custo
+
+TOOL_REGISTRY: Dict[str, Callable[[str], Dict[str, Any]]] = {
+    "executar_comando": executar_comando
+}
 
 
 def executar_loop(
     tarefa: str,
-    api_key: str,
-    modelo_inicial: Optional[str] = None,
+    provider: Provider,
     max_turns: int = MAX_TURNS,
-    api_base_url: Optional[str] = None
-):
+) -> List[Dict[str, Any]]:
     """
-    Executa o loop de harness multi-turno com medição de tokens e execução de tools.
-    Preserva rigorosamente o comportamento e as mensagens originais do spike.
+    Executa o loop de harness multi-turno com o Provider configurado.
+    Utiliza formato neutro de mensagens internamente.
+    Retorna o histórico neutro de mensagens ao final.
     """
-    modelo_ativo = modelo_inicial or MODELOS_PADRAO[0]
-
     print("=" * 60)
-    print("INICIANDO SPIKE: AGENT HARNESS (GEMINI)")
+    print("AGENT HARNESS")
+    print(f"Provider: {provider.nome.upper()} | Modelo: {provider.modelo_ativo}")
     print("=" * 60)
     print(f"Tarefa: {tarefa}")
-    print(f"Modelo configurado: {modelo_ativo}")
     print(f"Diretório atual: {os.getcwd()}")
     print("-" * 60)
 
-    contents: List[Dict[str, Any]] = [
+    mensagens: List[Dict[str, Any]] = [
         {
             "role": "user",
-            "parts": [{"text": tarefa}]
+            "text": tarefa
         }
     ]
 
@@ -53,85 +51,81 @@ def executar_loop(
         turnos_usados = turno
         print(f"\n>>> TURNO {turno} / {max_turns}")
 
-        # Chamada ao modelo
+        # Chamada ao modelo através do provider
         try:
-            resp, modelo_ativo = chamar_gemini(
-                api_key=api_key,
-                modelo=modelo_ativo,
-                contents=contents,
-                system_prompt=SYSTEM_PROMPT,
-                api_base_url=api_base_url
-            )
+            resp = provider.gerar(mensagens=mensagens, system_prompt=SYSTEM_PROMPT)
+        except HarnessError:
+            raise
         except Exception as e:
-            print(f"[ERRO DE API] Falha na chamada da API: {e}", file=sys.stderr)
-            sys.exit(1)
+            raise HarnessError(f"Falha na chamada do provider {provider.nome}: {e}") from e
 
         # Extração de métricas de tokens
-        usage = resp.get("usageMetadata", {})
-        metricas = extrair_metricas_usage(usage)
+        metricas = resp.usage
+        total_prompt_tokens += metricas.get("prompt", 0)
+        total_completion_tokens += metricas.get("completion", 0)
+        total_cached_tokens += metricas.get("cached", 0)
 
-        total_prompt_tokens += metricas["prompt"]
-        total_completion_tokens += metricas["completion"]
-        total_cached_tokens += metricas["cached"]
-
-        # Processamento da resposta
-        candidates = resp.get("candidates", [])
-        if not candidates:
-            print("[Aviso] Nenhuma resposta retornada pelo modelo.")
-            break
-
-        candidate = candidates[0]
-        content = candidate.get("content", {})
-        parts = content.get("parts", [])
-
-        texto_gerado, function_calls = extrair_texto_e_tool_calls(candidate)
+        texto_gerado = resp.text
+        tool_calls = resp.tool_calls
         tamanho_texto = len(texto_gerado)
 
         # Métricas do turno
-        print(f"Prompt tokens: {metricas['prompt']}")
-        print(f"Completion tokens: {metricas['completion']}")
-        print(f"Total tokens: {metricas['total']}")
-        if usage.get("cachedContentTokenCount") is not None:
+        print(f"Prompt tokens: {metricas.get('prompt', 0)}")
+        print(f"Completion tokens: {metricas.get('completion', 0)}")
+        print(f"Total tokens: {metricas.get('total', 0)}")
+        if metricas.get("cached", 0) > 0:
             print(f"Cached content tokens: {metricas['cached']}")
         print(f"Tamanho do texto gerado: {tamanho_texto} caracteres")
 
-        if function_calls:
-            # Anexa a resposta do modelo ao histórico da conversa
-            contents.append({"role": "model", "parts": parts})
+        if tool_calls:
+            # Anexa a resposta do modelo (com as tool calls) ao histórico neutro
+            mensagens.append({
+                "role": "model",
+                "text": texto_gerado,
+                "tool_calls": tool_calls
+            })
 
-            # Executa cada chamada de ferramenta e anexa os resultados
-            for fc in function_calls:
-                func_name = fc.get("name")
-                func_args = fc.get("args", {})
+            # Executa cada chamada de ferramenta e anexa os resultados neutros
+            for tc in tool_calls:
+                call_id = tc.get("id", "")
+                func_name = tc.get("name", "")
+                func_args = tc.get("args", {})
 
                 print(f"\n[Tool Call] Função: '{func_name}'")
-                if func_name == "executar_comando":
+                tool_func = TOOL_REGISTRY.get(func_name)
+
+                if tool_func is not None:
                     comando = func_args.get("comando", "")
                     print(f"[Tool Exec] Executando comando: {comando}")
-                    resultado_tool = executar_comando(comando)
+                    resultado_tool = tool_func(comando)
                     print(
                         f"[Tool Output] Código: {resultado_tool['codigo_saida']} | "
                         f"Stdout: {len(resultado_tool['stdout'])} chars | "
                         f"Stderr: {len(resultado_tool['stderr'])} chars"
                     )
 
-                    # Anexa resposta da função ao histórico
-                    contents.append({
-                        "role": "function",
-                        "parts": [montar_function_response(func_name, resultado_tool)]
+                    # Anexa resposta da ferramenta ao histórico neutro
+                    mensagens.append({
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "name": func_name,
+                        "resultado": resultado_tool
                     })
                 else:
                     print(f"[Tool Error] Função desconhecida: '{func_name}'")
-                    contents.append({
-                        "role": "function",
-                        "parts": [
-                            montar_function_response(
-                                func_name, {"erro": f"Ferramenta desconhecida: {func_name}"}
-                            )
-                        ]
+                    mensagens.append({
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "name": func_name,
+                        "resultado": {"erro": f"Ferramenta desconhecida: {func_name}"}
                     })
         else:
-            # Resposta final de texto
+            # Anexa resposta final ao histórico e encerra
+            mensagens.append({
+                "role": "model",
+                "text": texto_gerado,
+                "tool_calls": []
+            })
             concluido = True
             print(f"\n[Resposta Final do Modelo]:\n{texto_gerado.strip()}")
             break
@@ -144,7 +138,7 @@ def executar_loop(
         prompt_total=total_prompt_tokens,
         cached_total=total_cached_tokens,
         completion_total=total_completion_tokens,
-        precos=PRECOS_PADRAO
+        precos=provider.precos
     )
 
     print("\n" + "=" * 60)
@@ -156,5 +150,7 @@ def executar_loop(
     print(f"Total Completion Tokens: {total_completion_tokens}")
     print(f"Total Geral de Tokens: {total_prompt_tokens + total_completion_tokens}")
     print(f"Custo estimado da execução: ${custo_estimado:.6f} USD")
-    print(f"Modelo final: {modelo_ativo}")
+    print(f"Modelo final: {provider.modelo_ativo}")
     print("=" * 60)
+
+    return mensagens

@@ -1,23 +1,56 @@
 """Configurações e constantes do Agent Harness."""
 
-# Preços oficiais do gemini-2.5-flash por 1 milhão de tokens (USD)
-# Referência: https://ai.google.dev/pricing (Paid tier Standard, conferido em set/2026)
-PRECO_INPUT_POR_1M = 0.30     # USD por 1M prompt tokens
-PRECO_OUTPUT_POR_1M = 2.50    # USD por 1M completion tokens (inclui thinking tokens)
-PRECO_CACHE_POR_1M = 0.03     # USD por 1M cached tokens (context caching, texto)
+from typing import Any, Dict
 
-PRECOS_PADRAO = {
-    "input": PRECO_INPUT_POR_1M,
-    "output": PRECO_OUTPUT_POR_1M,
-    "cache": PRECO_CACHE_POR_1M,
+# Preços oficiais por 1 milhão de tokens (USD)
+# Gemini: https://ai.google.dev/pricing (Paid tier Standard, conferido em set/2026)
+# DeepSeek: https://api-docs.deepseek.com/quick_start/pricing (DeepSeek API, conferido em set/2026)
+PROVIDER_PRECOS: Dict[str, Dict[str, float]] = {
+    "gemini": {
+        "input": 0.30,
+        "output": 2.50,
+        "cache": 0.03,
+    },
+    "deepseek": {
+        # DeepSeek API (conferido em set/2026 via api-docs.deepseek.com/quick_start/pricing):
+        # Cache Miss (input): $0.27 / 1M tokens
+        # Output: $1.10 / 1M tokens
+        # Cache Hit (context caching): $0.014 / 1M tokens
+        "input": 0.27,
+        "output": 1.10,
+        "cache": 0.014,
+    },
+    "openai": {
+        # Referência padrão OpenAI gpt-4o-mini
+        "input": 0.15,
+        "output": 0.60,
+        "cache": 0.075,
+    }
 }
 
-# Modelos padrão na ordem de tentativa (modelo primário + fallback sem duplicatas)
-MODELOS_PADRAO = ["gemini-2.5-flash", "gemini-2.0-flash"]
+# Modelos padrão para cada provider
+DEFAULT_MODELS = {
+    "gemini": "gemini-2.5-flash",
+    "deepseek": "deepseek-chat",
+    "openai": "gpt-4o-mini",
+}
+
+# Fallbacks padrão
+DEFAULT_FALLBACKS = {
+    "gemini": ["gemini-2.0-flash"],
+    "deepseek": [],
+    "openai": [],
+}
+
+# Endpoints base padrão
+DEFAULT_BASE_URLS = {
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/models",
+    "deepseek": "https://api.deepseek.com/v1",
+    "openai": "https://api.openai.com/v1",
+}
 
 MAX_TURNS = 3
 COMMAND_TIMEOUT_SECONDS = 30
-API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
 SYSTEM_PROMPT = (
     "Você é um assistente operacional em um ambiente Windows. "
@@ -26,24 +59,40 @@ SYSTEM_PROMPT = (
     "Cumpra os pedidos do usuário de forma concisa e direta."
 )
 
-TOOL_DECLARATION = {
-    "function_declarations": [
-        {
-            "name": "executar_comando",
-            "description": (
-                "Executa um comando de linha de comando no terminal do Windows (PowerShell/CMD) "
-                "no diretório atual de trabalho. Retorna stdout, stderr e o código de saída."
-            ),
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "comando": {
-                        "type": "STRING",
-                        "description": "O comando de terminal a ser executado no Windows."
-                    }
-                },
-                "required": ["comando"]
+# Definição neutra única da ferramenta executar_comando
+TOOL_DEFINITION_NEUTRA: Dict[str, Any] = {
+    "name": "executar_comando",
+    "description": (
+        "Executa um comando de linha de comando no terminal do Windows (PowerShell/CMD) "
+        "no diretório atual de trabalho. Retorna stdout, stderr e o código de saída."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "comando": {
+                "type": "string",
+                "description": "O comando de terminal a ser executado no Windows."
             }
-        }
-    ]
+        },
+        "required": ["comando"]
+    }
+}
+
+# Compatibilidade retroativa com W1a (gemini_client)
+API_BASE_URL = DEFAULT_BASE_URLS["gemini"]
+MODELOS_PADRAO = [DEFAULT_MODELS["gemini"]] + DEFAULT_FALLBACKS["gemini"]
+PRECOS_PADRAO = PROVIDER_PRECOS["gemini"]
+TOOL_DECLARATION = {
+    "name": TOOL_DEFINITION_NEUTRA["name"],
+    "description": TOOL_DEFINITION_NEUTRA["description"],
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "comando": {
+                "type": "STRING",
+                "description": TOOL_DEFINITION_NEUTRA["parameters"]["properties"]["comando"]["description"]
+            }
+        },
+        "required": TOOL_DEFINITION_NEUTRA["parameters"]["required"]
+    }
 }

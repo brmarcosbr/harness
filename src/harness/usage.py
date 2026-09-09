@@ -1,13 +1,12 @@
 """Módulo de métricas de uso de tokens e cálculo de custo."""
 
 from typing import Any, Dict, Optional
-from harness.config import PRECOS_PADRAO
 
 
 def extrair_metricas_usage(usage: Optional[Dict[str, Any]]) -> Dict[str, int]:
     """
-    Extrai métricas de tokens a partir do dicionário usageMetadata retornado pela API Gemini.
-    Retorna dicionário com prompt, completion, total e cached (padrão 0 quando ausente).
+    Extrai métricas de tokens a partir do dicionário usage retornado por APIs de LLM.
+    Retorna dicionário exclusivamente com prompt, completion, total e cached (padrão 0 quando ausente).
     """
     if not usage:
         return {
@@ -15,28 +14,42 @@ def extrair_metricas_usage(usage: Optional[Dict[str, Any]]) -> Dict[str, int]:
             "completion": 0,
             "total": 0,
             "cached": 0,
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "cached_tokens": 0,
         }
 
-    prompt = usage.get("promptTokenCount", 0) or 0
-    completion = usage.get("candidatesTokenCount", 0) or 0
+    # Suporta convenção Gemini (camelCase) e OpenAI/DeepSeek (snake_case)
+    prompt = usage.get("promptTokenCount")
+    if prompt is None:
+        prompt = usage.get("prompt_tokens", 0)
+    prompt = prompt or 0
+
+    completion = usage.get("candidatesTokenCount")
+    if completion is None:
+        completion = usage.get("completion_tokens", 0)
+    completion = completion or 0
+
     total = usage.get("totalTokenCount")
     if total is None:
+        total = usage.get("total_tokens")
+    if total is None:
         total = prompt + completion
-    cached = usage.get("cachedContentTokenCount", 0) or 0
+    total = total or 0
+
+    cached = usage.get("cachedContentTokenCount")
+    if cached is None:
+        # Convenção DeepSeek direta: prompt_cache_hit_tokens
+        cached = usage.get("prompt_cache_hit_tokens")
+    if cached is None:
+        # Convenção OpenAI: prompt_tokens_details.cached_tokens
+        details = usage.get("prompt_tokens_details")
+        if isinstance(details, dict):
+            cached = details.get("cached_tokens")
+    cached = cached or 0
 
     return {
         "prompt": prompt,
         "completion": completion,
         "total": total,
         "cached": cached,
-        "prompt_tokens": prompt,
-        "completion_tokens": completion,
-        "total_tokens": total,
-        "cached_tokens": cached,
     }
 
 
@@ -44,15 +57,12 @@ def calcular_custo(
     prompt_total: int,
     cached_total: int,
     completion_total: int,
-    precos: Optional[Dict[str, float]] = None
+    precos: Dict[str, float]
 ) -> float:
     """
     Calcula o custo estimado da execução aplicando o desconto de tokens em cache.
     Fórmula: ((prompt - cached) * input + cached * cache + completion * output) / 1_000_000
     """
-    if precos is None:
-        precos = PRECOS_PADRAO
-
     preco_input = precos.get("input", 0.0)
     preco_cache = precos.get("cache", 0.0)
     preco_output = precos.get("output", 0.0)

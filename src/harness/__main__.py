@@ -1,34 +1,85 @@
 """Ponto de entrada de linha de comando para o pacote harness."""
 
 import argparse
+import os
 import sys
-from harness.gemini_client import carregar_api_key
+from harness.errors import HarnessError
+from harness.gemini_client import carregar_env
 from harness.loop import executar_loop
+from harness.providers import criar_provider
+
+
+def obter_api_key(provider_name: str) -> str:
+    """Busca a chave de API apropriada para o provider informado."""
+    carregar_env()
+    p = provider_name.lower()
+
+    if p == "gemini":
+        return os.environ.get("GEMINI_API_KEY", "")
+    elif p == "deepseek":
+        return os.environ.get("DEEPSEEK_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
+    elif p == "openai":
+        return os.environ.get("OPENAI_API_KEY", "")
+    else:
+        # Fallback genérico para providers customizados
+        return os.environ.get(f"{p.upper()}_API_KEY", "")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Agent Harness (Gemini API + Tool Use)."
+        description="Agent Harness — Loop multi-turno agnóstico de provider."
+    )
+    parser.add_argument(
+        "--provider",
+        type=str,
+        default=os.environ.get("HARNESS_PROVIDER", "gemini"),
+        help="Provedor de LLM: 'gemini', 'deepseek' ou 'openai' (padrão: HARNESS_PROVIDER ou 'gemini')."
+    )
+    parser.add_argument(
+        "--modelo",
+        type=str,
+        default=os.environ.get("HARNESS_MODELO", None),
+        help="Modelo específico a ser usado (opcional; usa o padrão do provider se omitido)."
     )
     parser.add_argument(
         "--tarefa",
         type=str,
-        default="liste os arquivos desta pasta e crie um arquivo ola.txt com o conteúdo 'spike ok'",
+        default="liste os arquivos desta pasta",
         help="Instrução a ser executada pelo agente."
     )
     args = parser.parse_args()
 
-    api_key = carregar_api_key()
+    provider_name = args.provider.lower()
+    api_key = obter_api_key(provider_name)
+
     if not api_key:
+        var_nome = (
+            "GEMINI_API_KEY" if provider_name == "gemini"
+            else "DEEPSEEK_API_KEY" if provider_name == "deepseek"
+            else "OPENAI_API_KEY"
+        )
         print(
-            "ERRO: Chave de API da Gemini não encontrada!\n"
-            "Defina a variável de ambiente GEMINI_API_KEY ou configure-a em um arquivo .env:\n"
-            "  GEMINI_API_KEY=sua_chave_aqui\n",
+            f"ERRO: Chave de API para o provider '{provider_name}' não encontrada!\n"
+            f"Defina a variável de ambiente {var_nome} ou configure-a em um arquivo .env:\n"
+            f"  {var_nome}=sua_chave_aqui\n",
             file=sys.stderr
         )
         sys.exit(1)
 
-    executar_loop(args.tarefa, api_key)
+    try:
+        provider = criar_provider(
+            provider_name=provider_name,
+            api_key=api_key,
+            modelo=args.modelo,
+            base_url=os.environ.get("HARNESS_BASE_URL", None)
+        )
+        executar_loop(tarefa=args.tarefa, provider=provider)
+    except HarnessError as e:
+        print(f"ERRO: {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"ERRO INESPERADO: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
