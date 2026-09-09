@@ -3,6 +3,7 @@
 import argparse
 import os
 import sys
+from pathlib import Path
 from harness.config import MAX_TURNS
 from harness.env import carregar_env
 from harness.errors import HarnessError
@@ -49,12 +50,37 @@ def main():
         help="Instrução a ser executada pelo agente."
     )
     parser.add_argument(
+        "--contexto",
+        type=str,
+        default=None,
+        help="Caminho para arquivo de contexto do projeto (.md ou .txt, max 200 KB)."
+    )
+    parser.add_argument(
         "--max-turns",
         type=int,
         default=MAX_TURNS,
         help=f"Número máximo de turnos de execução (padrão: {MAX_TURNS})."
     )
     args = parser.parse_args()
+
+    contexto_conteudo = None
+    if args.contexto:
+        caminho_contexto = Path(args.contexto)
+        if not caminho_contexto.is_file():
+            print(f"ERRO: Arquivo de contexto não encontrado: '{args.contexto}'", file=sys.stderr)
+            sys.exit(1)
+        tamanho_bytes = caminho_contexto.stat().st_size
+        if tamanho_bytes > 200 * 1024:
+            print(
+                f"ERRO: Arquivo de contexto excede o limite máximo de 200 KB ({tamanho_bytes} bytes): '{args.contexto}'",
+                file=sys.stderr
+            )
+            sys.exit(1)
+        try:
+            contexto_conteudo = caminho_contexto.read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            print(f"ERRO ao ler arquivo de contexto '{args.contexto}': {e}", file=sys.stderr)
+            sys.exit(1)
 
     provider_name = args.provider.lower()
     api_key = obter_api_key(provider_name)
@@ -80,7 +106,12 @@ def main():
             modelo=args.modelo,
             base_url=os.environ.get("HARNESS_BASE_URL", None)
         )
-        executar_loop(tarefa=args.tarefa, provider=provider, max_turns=args.max_turns)
+        executar_loop(
+            tarefa=args.tarefa,
+            provider=provider,
+            max_turns=args.max_turns,
+            contexto_projeto=contexto_conteudo,
+        )
     except HarnessError as e:
         print(f"ERRO: {e}", file=sys.stderr)
         sys.exit(1)

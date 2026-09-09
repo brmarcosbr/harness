@@ -4,8 +4,17 @@ import inspect
 import os
 from typing import Any, Callable, Dict, List, Optional
 from harness.config import (
+    COMMAND_TIMEOUT_SECONDS,
     MAX_TURNS,
+    MAX_TURNOS_MANTER_PODA,
     SYSTEM_PROMPT,
+    TETO_CONTEXTO_TOKENS,
+)
+from harness.contexto import (
+    PREFIXO_CONTEXTO,
+    estimar_tokens,
+    estimar_tokens_historico,
+    podar_historico,
 )
 from harness.errors import HarnessError
 from harness.providers import Provider
@@ -35,6 +44,7 @@ def executar_loop(
     tarefa: str,
     provider: Provider,
     max_turns: int = MAX_TURNS,
+    contexto_projeto: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Executa o loop de harness multi-turno com o Provider configurado.
@@ -46,15 +56,29 @@ def executar_loop(
     print(f"Provider: {provider.nome.upper()} | Modelo: {provider.modelo_ativo}")
     print("=" * 60)
     print(f"Tarefa: {tarefa}")
+    if contexto_projeto:
+        print(f"Contexto do projeto: {estimar_tokens(contexto_projeto)} tokens estimados (head)")
     print(f"Diretório atual: {os.getcwd()}")
     print("-" * 60)
 
-    mensagens: List[Dict[str, Any]] = [
-        {
-            "role": "user",
-            "text": tarefa
-        }
-    ]
+    if contexto_projeto:
+        mensagens: List[Dict[str, Any]] = [
+            {
+                "role": "user",
+                "text": f"{PREFIXO_CONTEXTO.strip()}\n{contexto_projeto}",
+            },
+            {
+                "role": "user",
+                "text": tarefa,
+            },
+        ]
+    else:
+        mensagens: List[Dict[str, Any]] = [
+            {
+                "role": "user",
+                "text": tarefa,
+            }
+        ]
 
     total_prompt_tokens = 0
     total_completion_tokens = 0
@@ -65,6 +89,13 @@ def executar_loop(
     for turno in range(1, max_turns + 1):
         turnos_usados = turno
         print(f"\n>>> TURNO {turno} / {max_turns}")
+
+        # Poda do histórico se exceder o teto de tokens, preservando head e tail
+        mensagens = podar_historico(
+            mensagens,
+            teto_tokens=TETO_CONTEXTO_TOKENS,
+            max_turnos_manter=MAX_TURNOS_MANTER_PODA,
+        )
 
         # Chamada ao modelo através do provider
         try:
@@ -186,6 +217,7 @@ def executar_loop(
     print(f"Total Cached Tokens: {total_cached_tokens}")
     print(f"Total Completion Tokens: {total_completion_tokens}")
     print(f"Total Geral de Tokens: {total_prompt_tokens + total_completion_tokens}")
+    print(f"Tokens estimados do historico final: {estimar_tokens_historico(mensagens)}")
     print(f"Custo estimado da execução: ${custo_estimado:.6f} USD")
     print(f"Modelo final: {provider.modelo_ativo}")
     print("=" * 60)

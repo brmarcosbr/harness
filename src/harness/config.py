@@ -59,6 +59,10 @@ DEFAULT_BASE_URLS = {
 MAX_TURNS = 8
 COMMAND_TIMEOUT_SECONDS = 30
 
+# Teto de poda do histórico; modelos atuais têm janela grande, o teto protege custo
+TETO_CONTEXTO_TOKENS = 100_000
+MAX_TURNOS_MANTER_PODA = 8
+
 SYSTEM_PROMPT = (
     "Você é um assistente operacional em um ambiente Windows. "
     "Você tem acesso a quatro ferramentas: 'executar_comando', 'ler_arquivo', 'escrever_arquivo' e 'buscar_no_projeto'. "
