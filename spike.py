@@ -29,6 +29,12 @@ MODEL_NAME = "gemini-2.5-flash"
 FALLBACK_MODEL = "gemini-2.5-flash"
 SECONDARY_FALLBACK = "gemini-2.0-flash"
 
+# Preços oficiais do gemini-2.5-flash por 1 milhão de tokens (USD)
+# Referência: https://ai.google.dev/pricing (Paid tier Standard, conferido em set/2026)
+PRECO_INPUT_POR_1M = 0.30     # USD por 1M prompt tokens
+PRECO_OUTPUT_POR_1M = 2.50    # USD por 1M completion tokens (inclui thinking tokens)
+PRECO_CACHE_POR_1M = 0.03     # USD por 1M cached tokens (context caching, texto)
+
 MAX_TURNS = 3
 COMMAND_TIMEOUT_SECONDS = 30
 API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
@@ -216,7 +222,9 @@ def executar_loop(tarefa: str, api_key: str):
     modelo_ativo = MODEL_NAME
     total_prompt_tokens = 0
     total_completion_tokens = 0
+    total_cached_tokens = 0
     turnos_usados = 0
+    concluido = False
 
     for turno in range(1, MAX_TURNS + 1):
         turnos_usados = turno
@@ -233,9 +241,12 @@ def executar_loop(tarefa: str, api_key: str):
         usage = resp.get("usageMetadata", {})
         prompt_tokens = usage.get("promptTokenCount", 0)
         completion_tokens = usage.get("candidatesTokenCount", 0)
+        total_tokens = usage.get("totalTokenCount", prompt_tokens + completion_tokens)
+        cached_tokens = usage.get("cachedContentTokenCount", 0) or 0
 
         total_prompt_tokens += prompt_tokens
         total_completion_tokens += completion_tokens
+        total_cached_tokens += cached_tokens
 
         # Processamento da resposta
         candidates = resp.get("candidates", [])
@@ -255,6 +266,9 @@ def executar_loop(tarefa: str, api_key: str):
         # Métricas do turno
         print(f"Prompt tokens: {prompt_tokens}")
         print(f"Completion tokens: {completion_tokens}")
+        print(f"Total tokens: {total_tokens}")
+        if usage.get("cachedContentTokenCount") is not None:
+            print(f"Cached content tokens: {cached_tokens}")
         print(f"Tamanho do texto gerado: {tamanho_texto} caracteres")
 
         function_calls = [p["functionCall"] for p in parts if "functionCall" in p]
@@ -306,17 +320,29 @@ def executar_loop(tarefa: str, api_key: str):
                     })
         else:
             # Resposta final de texto
+            concluido = True
             print(f"\n[Resposta Final do Modelo]:\n{texto_gerado.strip()}")
             break
 
-    # Resumo final
+    if not concluido:
+        print("\n[ATENCAO] Nao concluido: max_turns atingido sem resposta final")
+
+    # Resumo final com estimativa de custo considerando desconto de cache
+    custo_estimado = (
+        (total_prompt_tokens - total_cached_tokens) * PRECO_INPUT_POR_1M
+        + total_cached_tokens * PRECO_CACHE_POR_1M
+        + total_completion_tokens * PRECO_OUTPUT_POR_1M
+    ) / 1_000_000
+
     print("\n" + "=" * 60)
     print("RESUMO DA EXECUÇÃO")
     print("=" * 60)
     print(f"Turnos utilizados: {turnos_usados} de {MAX_TURNS}")
     print(f"Total Prompt Tokens: {total_prompt_tokens}")
+    print(f"Total Cached Tokens: {total_cached_tokens}")
     print(f"Total Completion Tokens: {total_completion_tokens}")
     print(f"Total Geral de Tokens: {total_prompt_tokens + total_completion_tokens}")
+    print(f"Custo estimado da execução: ${custo_estimado:.6f} USD")
     print(f"Modelo final: {modelo_ativo}")
     print("=" * 60)
 
