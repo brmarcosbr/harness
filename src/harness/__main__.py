@@ -5,6 +5,7 @@ import os
 import sys
 from pathlib import Path
 from harness.config import MAX_TURNS
+from harness.contexto import gerar_contexto_repo
 from harness.env import carregar_env
 from harness.errors import HarnessError
 from harness.loop import executar_loop
@@ -56,6 +57,16 @@ def main():
         help="Caminho para arquivo de contexto do projeto (.md ou .txt, max 200 KB)."
     )
     parser.add_argument(
+        "--contexto-repo",
+        action="store_true",
+        help="Gera e utiliza o contexto do repositório atual como contexto do projeto."
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Desabilita estabilidade do prefixo de contexto para forçar cache miss a cada turno."
+    )
+    parser.add_argument(
         "--max-turns",
         type=int,
         default=MAX_TURNS,
@@ -63,8 +74,14 @@ def main():
     )
     args = parser.parse_args()
 
+    if args.contexto and args.contexto_repo:
+        print("ERRO: As opções --contexto e --contexto-repo são mutuamente exclusivas.", file=sys.stderr)
+        sys.exit(1)
+
     contexto_conteudo = None
-    if args.contexto:
+    if args.contexto_repo:
+        contexto_conteudo = gerar_contexto_repo(Path.cwd())
+    elif args.contexto:
         caminho_contexto = Path(args.contexto)
         if not caminho_contexto.is_file():
             print(f"ERRO: Arquivo de contexto não encontrado: '{args.contexto}'", file=sys.stderr)
@@ -81,6 +98,8 @@ def main():
         except Exception as e:
             print(f"ERRO ao ler arquivo de contexto '{args.contexto}': {e}", file=sys.stderr)
             sys.exit(1)
+
+    cache_habilitado = not args.no_cache
 
     provider_name = args.provider.lower()
     api_key = obter_api_key(provider_name)
@@ -111,6 +130,7 @@ def main():
             provider=provider,
             max_turns=args.max_turns,
             contexto_projeto=contexto_conteudo,
+            cache_habilitado=cache_habilitado,
         )
     except HarnessError as e:
         print(f"ERRO: {e}", file=sys.stderr)

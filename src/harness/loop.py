@@ -1,7 +1,6 @@
-"""Módulo do loop multi-turno do Agent Harness."""
-
 import inspect
 import os
+import time
 from typing import Any, Callable, Dict, List, Optional
 from harness.config import (
     COMMAND_TIMEOUT_SECONDS,
@@ -14,7 +13,9 @@ from harness.contexto import (
     PREFIXO_CONTEXTO,
     estimar_tokens,
     estimar_tokens_historico,
+    montar_head,
     podar_historico,
+    sha256_head,
 )
 from harness.errors import HarnessError
 from harness.providers import Provider
@@ -45,6 +46,7 @@ def executar_loop(
     provider: Provider,
     max_turns: int = MAX_TURNS,
     contexto_projeto: Optional[str] = None,
+    cache_habilitado: bool = True,
 ) -> List[Dict[str, Any]]:
     """
     Executa o loop de harness multi-turno com o Provider configurado.
@@ -58,14 +60,20 @@ def executar_loop(
     print(f"Tarefa: {tarefa}")
     if contexto_projeto:
         print(f"Contexto do projeto: {estimar_tokens(contexto_projeto)} tokens estimados (head)")
+    if cache_habilitado:
+        head_texto = montar_head(SYSTEM_PROMPT, contexto_projeto)
+        print(f"Cache de contexto: ON (head sha256: {sha256_head(head_texto)})")
+    else:
+        print("Cache de contexto: OFF (prefixo instavel - simulando harness ingenuo)")
     print(f"Diretório atual: {os.getcwd()}")
     print("-" * 60)
 
     if contexto_projeto:
+        primeira_msg_base = f"{PREFIXO_CONTEXTO}{contexto_projeto}"
         mensagens: List[Dict[str, Any]] = [
             {
                 "role": "user",
-                "text": f"{PREFIXO_CONTEXTO.strip()}\n{contexto_projeto}",
+                "text": primeira_msg_base,
             },
             {
                 "role": "user",
@@ -73,10 +81,11 @@ def executar_loop(
             },
         ]
     else:
+        primeira_msg_base = tarefa
         mensagens: List[Dict[str, Any]] = [
             {
                 "role": "user",
-                "text": tarefa,
+                "text": primeira_msg_base,
             }
         ]
 
@@ -96,6 +105,15 @@ def executar_loop(
             teto_tokens=TETO_CONTEXTO_TOKENS,
             max_turnos_manter=MAX_TURNOS_MANTER_PODA,
         )
+
+        # Se o cache estiver desligado, injeta token mutável na primeira mensagem user
+        # a cada chamada para quebrar o prefixo estável (prefix-breaking trap)
+        if not cache_habilitado:
+            agora = time.time()
+            mensagens[0] = {
+                **mensagens[0],
+                "text": f"<!-- cache_off: {agora} -->\n{primeira_msg_base}\n<!-- cache_off: {agora} -->"
+            }
 
         # Chamada ao modelo através do provider
         try:
@@ -202,12 +220,24 @@ def executar_loop(
         print("\n[ATENCAO] Nao concluido: max_turns atingido sem resposta final")
 
     # Resumo final com estimativa de custo considerando desconto de cache
-    custo_estimado = calcular_custo(
+    custo_real = calcular_custo(
         prompt_total=total_prompt_tokens,
         cached_total=total_cached_tokens,
         completion_total=total_completion_tokens,
         precos=provider.precos
     )
+    custo_sem_cache = calcular_custo(
+        prompt_total=total_prompt_tokens,
+        cached_total=0,
+        completion_total=total_completion_tokens,
+        precos=provider.precos
+    )
+    if total_cached_tokens > 0 and custo_sem_cache > 0:
+        economia = custo_sem_cache - custo_real
+        porcentagem = (economia / custo_sem_cache) * 100.0
+    else:
+        economia = 0.0
+        porcentagem = 0.0
 
     print("\n" + "=" * 60)
     print("RESUMO DA EXECUÇÃO")
@@ -218,7 +248,8 @@ def executar_loop(
     print(f"Total Completion Tokens: {total_completion_tokens}")
     print(f"Total Geral de Tokens: {total_prompt_tokens + total_completion_tokens}")
     print(f"Tokens estimados do historico final: {estimar_tokens_historico(mensagens)}")
-    print(f"Custo estimado da execução: ${custo_estimado:.6f} USD")
+    print(f"Custo real (com cache): ${custo_real:.6f} USD")
+    print(f"Custo se sem cache: ${custo_sem_cache:.6f} USD | Economia: ${economia:.6f} USD ({porcentagem:.1f}%)")
     print(f"Modelo final: {provider.modelo_ativo}")
     print("=" * 60)
 

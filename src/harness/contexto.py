@@ -1,9 +1,71 @@
-"""Módulo de gerenciamento de contexto, estimativa de tokens e poda determinística do histórico."""
-
+import hashlib
 import json
-from typing import Any, Dict, List, Optional
+import os
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from harness.config import DIRS_IGNORADOS
 
 PREFIXO_CONTEXTO = "\n\n=== CONTEXTO DO PROJETO ===\n"
+
+
+def sha256_head(head_texto: str) -> str:
+    """
+    Função pura que calcula o hash SHA-256 dos 16 primeiros caracteres hexadecimais do head.
+    Permite verificar a invariância de prefixo (prefix invariance) de forma compacta e auditável.
+    """
+    return hashlib.sha256(head_texto.encode("utf-8")).hexdigest()[:16]
+
+
+def gerar_contexto_repo(
+    base_dir: Union[str, Path],
+    limite_tokens: int = 30000,
+    extensoes: Iterable[str] = (".py", ".md", ".toml", ".txt"),
+) -> str:
+    """
+    Função pura que gera uma representação textual determinística do repositório.
+    Varre o diretório ignorando DIRS_IGNORADOS, ordena arquivos alfabeticamente pelo
+    caminho relativo, e concatena arquivos inteiros até atingir o limite_tokens sem
+    partir nenhum arquivo ao meio.
+    Pula arquivos binários (com byte nulo) e arquivos maiores que 1 MB.
+    """
+    base_path = Path(base_dir).resolve()
+    ext_tuple = tuple(extensoes)
+    arquivos_candidatos: List[Tuple[str, Path]] = []
+
+    for root, dirs, files in os.walk(base_path):
+        dirs[:] = sorted([d for d in dirs if d not in DIRS_IGNORADOS and not d.endswith(".egg-info")])
+        for file in files:
+            p = Path(root) / file
+            if any(file.endswith(ext) for ext in ext_tuple):
+                try:
+                    caminho_rel = p.relative_to(base_path).as_posix()
+                    arquivos_candidatos.append((caminho_rel, p))
+                except ValueError:
+                    continue
+
+    # Ordenação estrita por caminho relativo garante determinismo
+    arquivos_candidatos.sort(key=lambda x: x[0])
+
+    acumulado = ""
+    for caminho_rel, p in arquivos_candidatos:
+        try:
+            if p.stat().st_size > 1024 * 1024:  # > 1 MB
+                continue
+            with open(p, "rb") as f_check:
+                amostra = f_check.read(1024)
+                if b"\x00" in amostra:
+                    continue
+            conteudo = p.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+
+        bloco = f"\n===== ARQUIVO: {caminho_rel} =====\n{conteudo}"
+        novo_acumulado = acumulado + bloco
+        if estimar_tokens(novo_acumulado) > limite_tokens:
+            break
+        acumulado = novo_acumulado
+
+    return acumulado
 
 
 def estimar_tokens(texto: Any) -> int:

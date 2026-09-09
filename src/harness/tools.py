@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import subprocess
 from typing import Any, Callable, Dict, List, Optional
-from harness.config import COMMAND_TIMEOUT_SECONDS
+from harness.config import COMMAND_TIMEOUT_SECONDS, DIRS_IGNORADOS
 
 # Padrões bloqueados de comandos destrutivos de sistema no Windows / cmd.exe
 PADROES_BLOQUEADOS = [
@@ -28,7 +28,7 @@ LIMITE_BUSCA_ARQUIVO_BYTES = 1024 * 1024    # 1 MB
 MAX_BUSCA_RESULTADOS = 50
 LIMITE_TRUNCAMENTO_SAIDA = 4000
 
-DIRS_IGNORADOS_BUSCA = {".venv", "__pycache__", ".git", ".pytest_cache", "build", "dist"}
+DIRS_IGNORADOS_BUSCA = DIRS_IGNORADOS
 
 
 def comando_bloqueado(comando: str) -> Optional[str]:
