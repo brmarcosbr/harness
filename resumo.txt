@@ -1,1 +1,0 @@
-﻿spike.py: 325 linhas
