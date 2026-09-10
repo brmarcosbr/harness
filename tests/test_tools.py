@@ -1171,8 +1171,10 @@ def test_readme_contagem_testes_sincronizada():
     import re
     from pathlib import Path
     raiz = Path(__file__).parent.parent
-    readme_path = raiz / "README.md"
-    if not readme_path.exists():
+    # O README existe em dois idiomas (EN canônico em README.md + tradução em README.pt-BR.md).
+    # A contagem tem que estar sincronizada nos dois, senão um deles passa a mentir em público.
+    readmes = [p for p in (raiz / "README.md", raiz / "README.pt-BR.md") if p.exists()]
+    if not readmes:
         import pytest
         pytest.skip("README.md não encontrado no ambiente/pacote de execução")
 
@@ -1197,25 +1199,29 @@ def test_readme_contagem_testes_sincronizada():
 
     total_testes = sum(_contar_testes_arquivo(f) for f in tests_dir.glob("test_*.py"))
 
-    readme_texto = readme_path.read_text(encoding="utf-8")
+    for readme_path in readmes:
+        nome = readme_path.name
+        readme_texto = readme_path.read_text(encoding="utf-8")
 
-    # 1. Checa contagem no badge
-    m_badge = re.search(r"img\.shields\.io/badge/tests-(\d+)%2F\1%20passing", readme_texto)
-    assert m_badge is not None, "Badge de testes com padrão 'tests-N%2FN%20passing' não encontrado no README.md"
-    badge_count = int(m_badge.group(1))
-    assert badge_count == total_testes, f"Badge no README cita {badge_count}, mas suíte tem {total_testes} testes"
+        # 1. Checa contagem no badge
+        m_badge = re.search(r"img\.shields\.io/badge/tests-(\d+)%2F\1%20passing", readme_texto)
+        assert m_badge is not None, f"Badge de testes com padrão 'tests-N%2FN%20passing' não encontrado em {nome}"
+        badge_count = int(m_badge.group(1))
+        assert badge_count == total_testes, f"Badge em {nome} cita {badge_count}, mas suíte tem {total_testes} testes"
 
-    # 2. Checa contagem no texto da seção de testes
-    m_texto = re.search(r"Os (\d+) testes unitários são executados 100% offline", readme_texto)
-    assert m_texto is not None, "Frase 'Os N testes unitários...' não encontrada no README.md"
-    texto_count = int(m_texto.group(1))
-    assert texto_count == total_testes, f"Texto no README cita {texto_count}, mas suíte tem {total_testes} testes"
+        # 2. Checa contagem no texto da seção de testes (qualquer um dos idiomas)
+        m_texto = re.search(r"Os (\d+) testes unitários são executados 100% offline", readme_texto) or re.search(
+            r"The (\d+) unit tests run 100% offline", readme_texto
+        )
+        assert m_texto is not None, f"Frase de contagem de testes não encontrada em {nome}"
+        texto_count = int(m_texto.group(1))
+        assert texto_count == total_testes, f"Texto em {nome} cita {texto_count}, mas suíte tem {total_testes} testes"
 
-    # 3. Checa contagem no bloco de saída esperada do pytest
-    m_saida = re.search(r"(\d+) passed in", readme_texto)
-    assert m_saida is not None, "Saída 'N passed in' não encontrada no README.md"
-    saida_count = int(m_saida.group(1))
-    assert saida_count == total_testes, f"Saída no README cita {saida_count}, mas suíte tem {total_testes} testes"
+        # 3. Checa contagem no bloco de saída esperada do pytest
+        m_saida = re.search(r"(\d+) passed in", readme_texto)
+        assert m_saida is not None, f"Saída 'N passed in' não encontrada em {nome}"
+        saida_count = int(m_saida.group(1))
+        assert saida_count == total_testes, f"Saída em {nome} cita {saida_count}, mas suíte tem {total_testes} testes"
 
 
 def test_envrc_protegido_e_templates(tmp_path):
