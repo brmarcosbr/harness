@@ -1411,6 +1411,183 @@ def test_buscar_no_projeto_timeout(tmp_path, monkeypatch):
     assert "tempo limite" in res.get("aviso", "")
 
 
+def test_git_status_verbose_bloqueado_sem_vazamento(tmp_path):
+    import subprocess
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True)
+
+    (tmp_path / "app.py").write_text("print('safe')", encoding="utf-8")
+    (tmp_path / ".env").write_text("CHAVE=SUPERSEGREDO_V10_ORIGINAL\n", encoding="utf-8")
+    subprocess.run(["git", "add", "app.py", ".env"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), capture_output=True)
+
+    # Modifica o .env no working tree para gerar diff se -v / -vv fosse executado
+    segredo_modificado = "CHAVE=SUPERSEGREDO_V10_MODIFICADO"
+    (tmp_path / ".env").write_text(f"{segredo_modificado}\n", encoding="utf-8")
+
+    variacoes_verbose = [
+        "git status -v",
+        "git status -vv",
+        "git status --verbose",
+        "git status --verbose --verbose",
+        "git status -vv --short",
+        "git status --long -v",
+        "git status -v -s",
+        "git status -sv",
+    ]
+
+    for cmd in variacoes_verbose:
+        res = executar_comando(cmd, base_dir=tmp_path)
+        assert res["codigo_saida"] == -1, f"Comando '{cmd}' deveria ser recusado pela allowlist"
+        assert segredo_modificado not in res["stdout"]
+        assert segredo_modificado not in res["stderr"]
+        assert "SUPERSEGREDO_V10_ORIGINAL" not in res["stdout"]
+        assert "SUPERSEGREDO_V10_ORIGINAL" not in res["stderr"]
+        assert "Flag não permitida para 'git status'" in res["stderr"]
+
+
+def test_git_status_e_ls_files_allowlist_adversarial(tmp_path):
+    import subprocess
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True)
+
+    segredo = "TOKEN_CONFIDENCIAL_ADVERSARIAL_999"
+    (tmp_path / ".env").write_text(f"API_SECRET={segredo}\n", encoding="utf-8")
+    (tmp_path / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".env", "main.py"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), capture_output=True)
+
+    (tmp_path / ".env").write_text(f"API_SECRET={segredo}_ALTERADO\n", encoding="utf-8")
+
+    # Varredura ampla de comandos e flags não permitidas ou evasivas
+    comandos_adversariais = [
+        # Tentativas de exibir conteúdo ou usar flags não listadas no status
+        "git status -vv",
+        "git status -v",
+        "git status --verbose",
+        "git status --show-stash",
+        "git status --ahead-behind",
+        "git status -z",
+        "git status --null",
+        "git status --porcelain -z",
+        # Tentativas no ls-files
+        "git ls-files -z",
+        "git ls-files --null",
+        "git ls-files --format='%(objectname) %(path)'",
+        "git ls-files --debug",
+        "git ls-files --stage -z",
+        "git ls-files -v",
+        # Flags perigosas globais passadas como subcomando/argumento
+        "git status --work-tree=.",
+        "git ls-files --work-tree=.",
+        "git log --oneline --work-tree=.",
+        "git log --oneline -p",
+        "git log --oneline --raw",
+        "git log --oneline --format=fuller",
+    ]
+
+    for cmd in comandos_adversariais:
+        res = executar_comando(cmd, base_dir=tmp_path)
+        assert res["codigo_saida"] == -1, f"Comando '{cmd}' deveria retornar código -1"
+        assert segredo not in res["stdout"]
+        assert segredo not in res["stderr"]
+
+
+def test_git_pathspec_magic_bloqueado(tmp_path):
+    import subprocess
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True)
+    (tmp_path / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("KEY=123\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), capture_output=True)
+
+    # Argumentos com sintaxe de pathspec magic ':' devem ser bloqueados em qualquer subcomando git
+    res_ls = executar_comando('git ls-files ":(top).env"', base_dir=tmp_path)
+    assert res_ls["codigo_saida"] == -1
+    assert "Pathspec magic ':' não permitido no git" in res_ls["stderr"]
+    assert "KEY=123" not in res_ls["stdout"]
+
+    res_st = executar_comando('git status ":(top).env"', base_dir=tmp_path)
+    assert res_st["codigo_saida"] == -1
+    assert "Pathspec magic ':' não permitido no git" in res_st["stderr"]
+
+    res_log = executar_comando('git log --oneline ":(top).env"', base_dir=tmp_path)
+    assert res_log["codigo_saida"] == -1
+    assert "Pathspec magic ':' não permitido no git" in res_log["stderr"]
+
+
+def test_git_z_e_null_bloqueados_e_redator_nul():
+    from harness.tools import _filtrar_saida_git
+
+    # 1. Bloqueio na validação de whitelist
+    args_ls_z = ["git", "ls-files", "-z"]
+    assert validar_comando_whitelist(args_ls_z) is not None
+    assert "Flag não permitida" in validar_comando_whitelist(args_ls_z)
+
+    args_ls_null = ["git", "ls-files", "--null"]
+    assert validar_comando_whitelist(args_ls_null) is not None
+
+    args_st_z = ["git", "status", "-z"]
+    assert validar_comando_whitelist(args_st_z) is not None
+
+    # 2. Defesa em profundidade no _filtrar_saida_git tratando registros NUL
+    saida_nul_bruta = "app.py\x00.env\x00src/main.py\x00secrets/.envrc\x00README.md\x00"
+    filtrada = _filtrar_saida_git(saida_nul_bruta)
+
+    assert "app.py" in filtrada
+    assert "src/main.py" in filtrada
+    assert "README.md" in filtrada
+    assert ".env" not in filtrada
+    assert ".envrc" not in filtrada
+    assert filtrada == "app.py\x00src/main.py\x00README.md\x00"
+
+
+def test_git_log_allowlist_stat_e_max_count(tmp_path):
+    import subprocess
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True)
+
+    (tmp_path / "app.py").write_text("print('c1')\n", encoding="utf-8")
+    subprocess.run(["git", "add", "app.py"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "commit 1"], cwd=str(tmp_path), capture_output=True)
+
+    (tmp_path / "app.py").write_text("print('c2')\n", encoding="utf-8")
+    subprocess.run(["git", "add", "app.py"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "commit 2"], cwd=str(tmp_path), capture_output=True)
+
+    # 1. git log --oneline -n2 e -n<N>
+    res1 = executar_comando("git log --oneline -n1", base_dir=tmp_path)
+    assert res1["codigo_saida"] == 0
+    assert "commit 2" in res1["stdout"]
+
+    # 2. git log --oneline --max-count=1
+    res2 = executar_comando("git log --oneline --max-count=1", base_dir=tmp_path)
+    assert res2["codigo_saida"] == 0
+    assert "commit 2" in res2["stdout"]
+
+    # 3. git log --oneline --stat
+    res3 = executar_comando("git log --oneline --stat -n 1", base_dir=tmp_path)
+    assert res3["codigo_saida"] == 0
+    assert "app.py" in res3["stdout"]
+    assert "|" in res3["stdout"]
+
+    # 4. git log com .env commitado e --stat: o .env é redigido da saída
+    (tmp_path / ".env").write_text("SEGREDO=XYZ\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".env"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add .env"], cwd=str(tmp_path), capture_output=True)
+
+    res4 = executar_comando("git log --oneline --stat -n 1", base_dir=tmp_path)
+    assert res4["codigo_saida"] == 0
+    assert "SEGREDO" not in res4["stdout"]
+    assert ".env" not in res4["stdout"]
+
+
+
 
 
 

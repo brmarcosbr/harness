@@ -463,6 +463,48 @@ def _tokenizar(comando: str) -> List[str]:
     return tokens
 
 
+def _validar_flag_status_git(a: str) -> bool:
+    """Verifica se uma flag do 'git status' pertence à allowlist estrita de metadados."""
+    a_lower = a.lower()
+    # Flags longas exatas permitidas
+    if a_lower in (
+        "--short", "--long", "--branch", "--ignored",
+        "--porcelain", "--no-ahead-behind", "--renames", "--no-renames"
+    ):
+        return True
+    # Flags com parâmetros permitidos
+    if a_lower.startswith(("--porcelain=", "--untracked-files=", "--ignored=")):
+        return True
+    # Flags curtas permitidas
+    if a_lower in ("-s", "-b", "-u", "-uno", "-unormal", "-uall"):
+        return True
+    # Combinações de short flags inócuas (apenas 's' e 'b', ex: -sb, -bs)
+    if a_lower.startswith("-") and not a_lower.startswith("--"):
+        corpo = a_lower[1:]
+        if corpo and all(c in ("s", "b") for c in corpo):
+            return True
+    return False
+
+
+def _validar_flag_ls_files_git(a: str) -> bool:
+    """Verifica se uma flag do 'git ls-files' pertence à allowlist estrita de metadados."""
+    a_lower = a.lower()
+    if a_lower in (
+        "--cached", "--others", "--stage", "--deleted",
+        "--modified", "--ignored", "--full-name",
+        "--exclude-standard", "--error-unmatch", "--deduplicate"
+    ):
+        return True
+    if a_lower in ("-c", "-o", "-s", "-t", "-d", "-m", "-i"):
+        return True
+    # Combinações de short flags inócuas ('c', 'o', 's', 't', 'd', 'm', 'i')
+    if a_lower.startswith("-") and not a_lower.startswith("--"):
+        corpo = a_lower[1:]
+        if corpo and all(c in ("c", "o", "s", "t", "d", "m", "i") for c in corpo):
+            return True
+    return False
+
+
 def validar_comando_whitelist(
     args: List[str],
     base_dir: Optional[Path] = None
@@ -479,7 +521,7 @@ def validar_comando_whitelist(
     if executavel not in comandos_permitidos:
         return (
             f"Comando bloqueado pela política de segurança: '{args[0]}' não permitido. Este harness executa por whitelist.\n"
-            f"Permitidos: dir, type, python <arquivo>.py, git status|diff|log|show|ls-files, findstr, where, echo.\n"
+            f"Permitidos: dir, type, python <arquivo>.py, git status|ls-files|log --oneline, findstr, where, echo.\n"
             f"Para manipular arquivos use ler_arquivo / escrever_arquivo / buscar_no_projeto."
         )
 
@@ -554,58 +596,95 @@ def validar_comando_whitelist(
                 "status, ls-files, log --oneline."
             )
 
+        # Rejeição imediata de pathspec magic ':' em qualquer subcomando git
+        for a in args[2:]:
+            if a.startswith(":"):
+                return f"Pathspec magic ':' não permitido no git: '{a}'."
+
         if subcmd == "log":
             tem_oneline = any(a.lower() == "--oneline" for a in args[2:])
             if not tem_oneline:
                 return (
                     "Comando 'git log' requer a flag '--oneline': "
-                    "'git log --oneline [-n <N>]'."
+                    "'git log --oneline [-n <N>] [--stat]'."
                 )
 
-            # Permite apenas flags inócuas de uma linha e limite de commits
+            # Permite apenas flags inócuas de metadados, limite de commits e caminhos seguros
             for a in args[2:]:
                 a_lower = a.lower()
                 if a_lower == "--oneline":
                     continue
-                if a_lower in ("-n", "--max-count"):
+                if a_lower in ("-n", "--max-count", "--stat"):
+                    continue
+                if a_lower.startswith("-n") and a_lower[2:].isdigit():
+                    continue
+                if a_lower.startswith("--max-count=") and a_lower.split("=", 1)[1].isdigit():
                     continue
                 if a.isdigit() or (a.startswith("-") and a[1:].isdigit()):
                     continue
+
+                if not a.startswith("-"):
+                    if Path(a).is_absolute() or (len(a) >= 2 and a[1] == ":") or a.startswith(("/", "\\")):
+                        return f"Caminho absoluto não permitido no git: '{a}'."
+                    partes = a.replace("\\", "/").split("/")
+                    if ".." in partes:
+                        return f"Caminho não pode conter '..' (fora do projeto): '{a}'."
+                    if caminho_protegido(a, modo="leitura"):
+                        return f"Acesso a caminho protegido bloqueado no git: '{a}'."
+                    try:
+                        resolver_caminho_seguro(a, base_dir=raiz, operacao="leitura")
+                        continue
+                    except ValueError:
+                        return f"Caminho fora do diretório do projeto: '{a}'."
+
                 return (
                     f"Argumento não permitido para 'git log --oneline': '{a}'. "
-                    "Permitido apenas '-n <N>' ou '--max-count=<N>'."
+                    "Permitido apenas '-n <N>', '-n<N>', '--max-count=<N>', '--stat' e caminhos de arquivos seguros."
                 )
-        else:
-            # Para status e ls-files:
-            flags_bloqueadas = (
-                "--output", "--work-tree", "--git-dir", "--namespace",
-                "--config-env", "-o=", "--exec-path", "--paginate"
-            )
+
+        elif subcmd == "status":
             for a in args[2:]:
-                a_lower = a.lower()
-                if (
-                    any(a_lower.startswith(f) or a_lower == f for f in flags_bloqueadas)
-                    or a_lower.startswith("-o")
-                ):
-                    return f"Flag perigosa ou redirecionamento não permitido no git: '{a}'."
-
                 if a.startswith("-"):
-                    continue
+                    if not _validar_flag_status_git(a):
+                        return (
+                            f"Flag não permitida para 'git status': '{a}'. "
+                            "Permitidas apenas flags de metadados: --short, -s, --porcelain, "
+                            "--branch, -b, --untracked-files, -u, --ignored, --long."
+                        )
+                else:
+                    if Path(a).is_absolute() or (len(a) >= 2 and a[1] == ":") or a.startswith(("/", "\\")):
+                        return f"Caminho absoluto não permitido no git: '{a}'."
+                    partes = a.replace("\\", "/").split("/")
+                    if ".." in partes:
+                        return f"Caminho não pode conter '..' (fora do projeto): '{a}'."
+                    if caminho_protegido(a, modo="leitura"):
+                        return f"Acesso a caminho protegido bloqueado no git: '{a}'."
+                    try:
+                        resolver_caminho_seguro(a, base_dir=raiz, operacao="leitura")
+                    except ValueError:
+                        return f"Caminho fora do diretório do projeto: '{a}'."
 
-                if Path(a).is_absolute() or (len(a) >= 2 and a[1] == ":") or a.startswith(("/", "\\")):
-                    return f"Caminho absoluto não permitido no git: '{a}'."
-
-                partes = a.replace("\\", "/").split("/")
-                if ".." in partes:
-                    return f"Caminho não pode conter '..' (fora do projeto): '{a}'."
-
-                if caminho_protegido(a, modo="leitura"):
-                    return f"Acesso a caminho protegido bloqueado no git: '{a}'."
-
-                try:
-                    resolver_caminho_seguro(a, base_dir=raiz, operacao="leitura")
-                except ValueError:
-                    return f"Caminho fora do diretório do projeto: '{a}'."
+        elif subcmd == "ls-files":
+            for a in args[2:]:
+                if a.startswith("-"):
+                    if not _validar_flag_ls_files_git(a):
+                        return (
+                            f"Flag não permitida para 'git ls-files': '{a}'. "
+                            "Permitidas apenas flags de metadados: --cached, -c, --others, -o, "
+                            "--stage, -s, -t, --full-name, --deleted, --modified, --exclude-standard."
+                        )
+                else:
+                    if Path(a).is_absolute() or (len(a) >= 2 and a[1] == ":") or a.startswith(("/", "\\")):
+                        return f"Caminho absoluto não permitido no git: '{a}'."
+                    partes = a.replace("\\", "/").split("/")
+                    if ".." in partes:
+                        return f"Caminho não pode conter '..' (fora do projeto): '{a}'."
+                    if caminho_protegido(a, modo="leitura"):
+                        return f"Acesso a caminho protegido bloqueado no git: '{a}'."
+                    try:
+                        resolver_caminho_seguro(a, base_dir=raiz, operacao="leitura")
+                    except ValueError:
+                        return f"Caminho fora do diretório do projeto: '{a}'."
 
     elif executavel in {"type", "findstr", "where", "dir"}:
         if executavel == "type" and len(args) < 2:
@@ -722,10 +801,10 @@ def _expandir_renomeacoes(texto: str) -> List[str]:
 
 def _linha_toca_protegido_git(linha: str) -> bool:
     """
-    Avalia se uma linha de saída de comando git cita algum caminho protegido
+    Avalia se uma linha ou registro de saída de comando git cita algum caminho protegido
     (como .env, .git, etc.), incluindo status, ls-files e log --oneline.
     """
-    linha_limpa = linha.strip()
+    linha_limpa = linha.strip("\r\n\t \x00")
     if not linha_limpa:
         return False
 
@@ -743,9 +822,9 @@ def _linha_toca_protegido_git(linha: str) -> bool:
             if caminho_protegido(_desescapar_caminho_git(c), modo="leitura"):
                 return True
 
-    # 3. Varrer cada token individual separado por espaços ou tabs
-    for t in re.split(r"[\t\s]+", linha_limpa):
-        t_limpo = t.strip("\"'`,:")
+    # 3. Varrer cada token individual separado por espaços, tabs ou NUL (\x00)
+    for t in re.split(r"[\t\s\x00]+", linha_limpa):
+        t_limpo = t.strip("\"'`,:\x00")
         if caminho_protegido(_desescapar_caminho_git(t_limpo), modo="leitura"):
             return True
         for c in _expandir_renomeacoes(t_limpo):
@@ -758,10 +837,25 @@ def _linha_toca_protegido_git(linha: str) -> bool:
 def _filtrar_saida_git(stdout: str) -> str:
     """
     Filtra a saída textual dos subcomandos git permitidos (status, ls-files, log --oneline).
-    Omite completamente qualquer linha que mencione ou cite arquivos protegidos.
+    Omite completamente qualquer linha ou registro NUL-delimitado que mencione arquivos protegidos.
     """
     if not stdout:
         return stdout
+
+    # Se a saída contiver registros separados por NUL (\x00), divide por NUL
+    if "\x00" in stdout:
+        termina_com_nul = stdout.endswith("\x00")
+        registros = stdout.split("\x00")
+        if termina_com_nul and registros and registros[-1] == "":
+            registros.pop()
+        registros_filtrados = [
+            r for r in registros
+            if not _linha_toca_protegido_git(r)
+        ]
+        saida = "\x00".join(registros_filtrados)
+        if termina_com_nul and saida:
+            saida += "\x00"
+        return saida
 
     linhas = stdout.splitlines(keepends=True)
     return "".join(l for l in linhas if not _linha_toca_protegido_git(l))
