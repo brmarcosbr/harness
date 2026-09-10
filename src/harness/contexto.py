@@ -49,14 +49,13 @@ def gerar_contexto_repo(
         for file in files:
             p = Path(root) / file
             try:
-                alvo_seguro = resolver_caminho_seguro(p, base_dir=base_path, operacao="leitura")
+                alvo_seguro, relativo = resolver_caminho_seguro(
+                    p, base_dir=base_path, operacao="leitura", retornar_relativo=True
+                )
             except ValueError:
                 continue
 
-            try:
-                caminho_rel = p.relative_to(base_path).as_posix()
-            except ValueError:
-                continue
+            caminho_rel = relativo.as_posix()
 
             if any(file.endswith(ext) for ext in ext_tuple):
                 arquivos_candidatos.append((caminho_rel, alvo_seguro))

@@ -945,6 +945,114 @@ def test_filtrar_saida_git_redige_diff_protegido():
     assert "[conteúdo de arquivo protegido omitido pela política de segurança]" in saida_filtrada
 
 
+def test_anti_duplicacao_relative_to():
+    """Garante que relative_to aparece exatamente uma vez em tools.py e zero em contexto.py."""
+    src_dir = Path(__file__).parent.parent / "src" / "harness"
+    tools_code = (src_dir / "tools.py").read_text(encoding="utf-8")
+    contexto_code = (src_dir / "contexto.py").read_text(encoding="utf-8")
+
+    matches_tools = [linha for linha in tools_code.splitlines() if "relative_to(" in linha]
+    matches_contexto = [linha for linha in contexto_code.splitlines() if "relative_to(" in linha]
+
+    assert len(matches_tools) == 1, f"tools.py deve ter exatamente 1 chamada a relative_to, encontrado: {matches_tools}"
+    assert "relativo = alvo.relative_to(raiz)" in matches_tools[0]
+    assert len(matches_contexto) == 0, f"contexto.py não deve conter relative_to, encontrado: {matches_contexto}"
+
+
+def test_obter_env_saneado_termos_ampliados(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgres://user:pass@localhost/db")
+    monkeypatch.setenv("REDIS_URI", "redis://localhost:6379")
+    monkeypatch.setenv("DB_CONN", "Server=localhost;Database=test;")
+    monkeypatch.setenv("BASIC_AUTH", "Basic dXNlcjpwYXNz")
+    monkeypatch.setenv("MYSQL_PWD", "mysqlsecret")
+    monkeypatch.setenv("PASSPHRASE_CLIENT", "my-passphrase")
+    monkeypatch.setenv("PASSKEY_SECRET", "my-passkey")
+    monkeypatch.setenv("USER", "testuser")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("HOME", "/home/testuser")
+    monkeypatch.setenv("LANG", "en_US.UTF-8")
+
+    env_limpo = obter_env_saneado()
+
+    assert "DATABASE_URL" not in env_limpo
+    assert "REDIS_URI" not in env_limpo
+    assert "DB_CONN" not in env_limpo
+    assert "BASIC_AUTH" not in env_limpo
+    assert "MYSQL_PWD" not in env_limpo
+    assert "PASSPHRASE_CLIENT" not in env_limpo
+    assert "PASSKEY_SECRET" not in env_limpo
+
+    assert env_limpo.get("USER") == "testuser"
+    assert env_limpo.get("PATH") == "/usr/bin:/bin"
+    assert env_limpo.get("HOME") == "/home/testuser"
+    assert env_limpo.get("LANG") == "en_US.UTF-8"
+
+
+def test_falsos_positivos_env_templates_e_findstr(tmp_path):
+    (tmp_path / ".env.example").write_text("FOO=BAR_EXAMPLE\n", encoding="utf-8")
+    (tmp_path / ".env.sample").write_text("FOO=BAR_SAMPLE\n", encoding="utf-8")
+    (tmp_path / ".env.template").write_text("FOO=BAR_TEMPLATE\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("SECRET=REAL_VALUE\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("Arquivo .env de configuracao\n", encoding="utf-8")
+
+    # .env.example, .env.sample e .env.template permitidos
+    assert caminho_protegido(".env.example") is False
+    assert caminho_protegido(".env.sample") is False
+    assert caminho_protegido(".env.template") is False
+    assert caminho_protegido(".env") is True
+    assert caminho_protegido(".env.local") is True
+
+    res_ex = executar_comando("type .env.example", base_dir=tmp_path)
+    assert res_ex["codigo_saida"] == 0
+    assert "FOO=BAR_EXAMPLE" in res_ex["stdout"]
+
+    res_real = executar_comando("type .env", base_dir=tmp_path)
+    assert res_real["codigo_saida"] in (-1, 1)
+
+    # findstr com '.env' como padrão de busca no README.md deve ser PERMITIDO
+    res_findstr = executar_comando("findstr .env README.md", base_dir=tmp_path)
+    assert res_findstr["codigo_saida"] == 0
+    assert ".env" in res_findstr["stdout"]
+
+    # findstr com /g:.env ou visando .env como arquivo deve ser BLOQUEADO
+    res_findstr_g = executar_comando("findstr /g:.env README.md", base_dir=tmp_path)
+    assert res_findstr_g["codigo_saida"] == -1
+    assert "Flag perigosa" in res_findstr_g["stderr"] or "bloqueado" in res_findstr_g["stderr"]
+
+    res_findstr_alvo = executar_comando("findstr padrao .env", base_dir=tmp_path)
+    assert res_findstr_alvo["codigo_saida"] == -1
+    assert "protegido" in res_findstr_alvo["stderr"]
+
+
+def test_findstr_posix_fallback_limites(tmp_path, monkeypatch):
+    import shutil
+    # Força uso do fallback do findstr simulando ausência do binário nativo
+    monkeypatch.setattr(shutil, "which", lambda cmd: None if cmd == "findstr" else "/bin/" + cmd)
+
+    # Arquivo gigante (> 1 MB) deve ser ignorado
+    gigante = tmp_path / "gigante.txt"
+    gigante.write_bytes(b"alvo\n" * (300 * 1024))  # ~1.5 MB
+    res_gigante = executar_comando("findstr alvo gigante.txt", base_dir=tmp_path)
+    assert res_gigante["codigo_saida"] == 1
+    assert res_gigante["stdout"] == ""
+
+    # Arquivo binário com null byte deve ser ignorado
+    binario = tmp_path / "binario.dat"
+    binario.write_bytes(b"cabecalho\x00alvo em binario")
+    res_bin = executar_comando("findstr alvo binario.dat", base_dir=tmp_path)
+    assert res_bin["codigo_saida"] == 1
+    assert res_bin["stdout"] == ""
+
+    # Arquivo com muitas ocorrências deve limitar a 50 resultados
+    muitas = tmp_path / "muitas.txt"
+    muitas.write_text("linha alvo\n" * 100, encoding="utf-8")
+    res_muitas = executar_comando("findstr alvo muitas.txt", base_dir=tmp_path)
+    assert res_muitas["codigo_saida"] == 0
+    linhas = [l for l in res_muitas["stdout"].splitlines() if l.strip()]
+    assert len(linhas) == 50
+
+
+
 
 
 

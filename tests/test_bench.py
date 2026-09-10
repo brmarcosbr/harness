@@ -396,4 +396,24 @@ def test_validar_t2_e_t3_le_do_disco_quando_ausente_no_historico(tmp_path):
     assert "stdout não-vazio" in detalhe
 
 
+def test_rodar_benchmark_ordem_alternada_on_off(tmp_path):
+    """Verifica que o benchmark alterna a ordem ON/OFF entre tarefas consecutivas."""
+    def fake_factory():
+        return FakeBenchProvider([
+            ProviderResponse(text="Final", tool_calls=[], usage={"prompt": 50, "completion": 10, "total": 60, "cached": 0}, modelo="mock")
+        ])
+
+    resultados = rodar_benchmark(fake_factory, max_turns=1, base_dir=tmp_path)
+    # T1: ON, OFF
+    assert resultados[0]["tarefa_id"] == "T1" and resultados[0]["cache"] == "ON"
+    assert resultados[1]["tarefa_id"] == "T1" and resultados[1]["cache"] == "OFF"
+    # T2: OFF, ON
+    assert resultados[2]["tarefa_id"] == "T2" and resultados[2]["cache"] == "OFF"
+    assert resultados[3]["tarefa_id"] == "T2" and resultados[3]["cache"] == "ON"
+    # T3: ON, OFF
+    assert resultados[4]["tarefa_id"] == "T3" and resultados[4]["cache"] == "ON"
+    assert resultados[5]["tarefa_id"] == "T3" and resultados[5]["cache"] == "OFF"
+
+
+
 

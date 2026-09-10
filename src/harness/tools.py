@@ -6,7 +6,7 @@ import re
 import shutil
 import subprocess
 import sys
-from typing import Any, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Literal, Optional, Set, Tuple, Union, overload
 import harness.config as config
 from harness.config import (
     COMMAND_TIMEOUT_SECONDS,
@@ -89,6 +89,8 @@ def caminho_protegido(caminho: Union[str, Path], modo: str = "leitura") -> bool:
     for bp in bloqueio_total:
         for p in partes:
             if bp == ".env":
+                if p.endswith((".example", ".sample", ".template")):
+                    continue
                 if p == ".env" or p.startswith(".env.") or p.startswith(".env_"):
                     return True
             elif bp == ".git":
@@ -209,8 +211,19 @@ def comando_toca_protegido(comando: str) -> Optional[str]:
             if cmd_nome == "echo":
                 continue
 
+            args_para_varrer = list(args)
+            if cmd_nome == "findstr":
+                # O primeiro argumento posicional (não-flag) é o padrão de busca, não um arquivo
+                idx_padrao = None
+                for i, a in enumerate(args_para_varrer):
+                    if not a.startswith(("/", "-")):
+                        idx_padrao = i
+                        break
+                if idx_padrao is not None:
+                    args_para_varrer.pop(idx_padrao)
+
             # Varrer tokens de argumentos para detectar caminhos protegidos (.env, .git, etc.)
-            for a in args:
+            for a in args_para_varrer:
                 if (a.startswith("-") or a.startswith("/")) and not (":" in a and not a.startswith("--")):
                     continue
                 cand = a.split(":", 1)[1] if (":" in a and not a.startswith("-")) else a
@@ -231,7 +244,7 @@ def comando_toca_protegido(comando: str) -> Optional[str]:
 
             # Comandos de leitura
             elif cmd_nome in LEITURA_COMANDOS:
-                for a in args:
+                for a in args_para_varrer:
                     if a.startswith("/") or (a.startswith("-") and len(a) > 1 and not a.startswith("--")):
                         continue
                     if caminho_protegido(a, modo="leitura"):
@@ -286,16 +299,36 @@ def truncar_saida(texto: Any, limite: int = LIMITE_TRUNCAMENTO_SAIDA) -> str:
     return texto
 
 
+@overload
 def resolver_caminho_seguro(
     caminho: Union[str, Path],
     base_dir: Optional[Path] = None,
-    operacao: str = "leitura"
-) -> Path:
+    operacao: str = "leitura",
+    retornar_relativo: Literal[False] = False,
+) -> Path: ...
+
+
+@overload
+def resolver_caminho_seguro(
+    caminho: Union[str, Path],
+    base_dir: Optional[Path] = None,
+    operacao: str = "leitura",
+    retornar_relativo: Literal[True] = True,
+) -> Tuple[Path, Path]: ...
+
+
+def resolver_caminho_seguro(
+    caminho: Union[str, Path],
+    base_dir: Optional[Path] = None,
+    operacao: str = "leitura",
+    retornar_relativo: bool = False,
+) -> Union[Path, Tuple[Path, Path]]:
     """
     Valida e resolve o caminho relativo ao base_dir (default cwd).
     Levanta ValueError se tentar path traversal para fora do base_dir,
     se o alvo resolvido escapar da raiz via symlink/junction,
     ou se tentar acessar caminhos protegidos do projeto via caminho_protegido.
+    Se retornar_relativo=True, retorna tupla (alvo, relativo).
     """
     raiz = (base_dir or Path.cwd()).resolve()
     caminho_obj = Path(caminho)
@@ -316,6 +349,8 @@ def resolver_caminho_seguro(
     ):
         raise ValueError(f"caminho protegido: {caminho}")
 
+    if retornar_relativo:
+        return alvo, relativo
     return alvo
 
 
@@ -327,22 +362,35 @@ def obter_env_saneado(chaves_ocultas: Optional[Set[str]] = None) -> Dict[str, st
     Função pura que retorna cópia de os.environ omitindo variáveis que contenham termos
     sensíveis em qualquer token delimitado por '_' (case-insensitive):
     KEY, SECRET, TOKEN, PASSWORD, PASS, PASSWD, CREDENTIAL, CREDENTIALS, DSN, PRIVATE,
-    ou que terminem com sufixos sensíveis conhecidos (ex: APIKEY, CONNECTION_STRING),
+    URL, URI, CONN, AUTH, PWD,
+    ou que iniciem por prefixos sensíveis (ex: PASSPHRASE, PASSKEY, PASSWORD, PASSWD)
+    ou terminem com sufixos sensíveis conhecidos (ex: APIKEY, CONNECTION_STRING),
     bem como qualquer chave carregada do arquivo .env (CHAVES_CARREGADAS_ENV) ou informada em chaves_ocultas.
+    Preserva variáveis de sistema essenciais (PATH, HOME, LANG, USER, etc.).
     """
     env_copia = os.environ.copy()
     chaves_proibidas_extra = set(chaves_ocultas) if chaves_ocultas else set()
     termos_sensiveis = {
         "KEY", "SECRET", "TOKEN", "PASSWORD", "PASS", "PASSWD",
-        "CREDENTIAL", "CREDENTIALS", "DSN", "PRIVATE"
+        "CREDENTIAL", "CREDENTIALS", "DSN", "PRIVATE",
+        "URL", "URI", "CONN", "AUTH", "PWD"
+    }
+    prefixos_sensiveis = ("PASSPHRASE", "PASSKEY", "PASSWORD", "PASSWD")
+    sufixos_sensiveis = ("APIKEY", "PASSWORD", "SECRET", "TOKEN", "PASSWD", "CONNECTION_STRING")
+    variaveis_preservadas = {
+        "PATH", "HOME", "HOMEPATH", "HOMEDRIVE", "LANG", "USER",
+        "USERNAME", "SYSTEMROOT", "WINDIR", "TEMP", "TMP"
     }
 
     for k in list(env_copia.keys()):
         k_upper = k.upper()
+        if k_upper in variaveis_preservadas and k not in CHAVES_CARREGADAS_ENV and k not in chaves_proibidas_extra:
+            continue
         segmentos = set(k_upper.split("_"))
         if (
             segmentos & termos_sensiveis
-            or any(k_upper.endswith(s) for s in ("APIKEY", "PASSWORD", "SECRET", "TOKEN", "PASSWD", "CONNECTION_STRING"))
+            or any(k_upper.startswith(p) for p in prefixos_sensiveis)
+            or any(k_upper.endswith(s) for s in sufixos_sensiveis)
         ):
             env_copia.pop(k, None)
         elif k in CHAVES_CARREGADAS_ENV or k in chaves_proibidas_extra:
@@ -588,10 +636,13 @@ def validar_comando_whitelist(
                 if a_lower in ("/r", "-r") or a_lower.startswith(("/r:", "-r:")):
                     return f"Flag perigosa não permitida no where: '{a}'."
 
-        for a in args[1:]:
-            # Ignora flags de comando (como /b, -b, -n)
-            if a.startswith(("/", "-")):
-                continue
+        if executavel == "findstr":
+            nao_flags = [a for a in args[1:] if not a.startswith(("/", "-"))]
+            caminhos_para_validar = nao_flags[1:]
+        else:
+            caminhos_para_validar = [a for a in args[1:] if not a.startswith(("/", "-"))]
+
+        for a in caminhos_para_validar:
             partes = a.replace("\\", "/").split("/")
             if ".." in partes:
                 return f"Caminho não pode conter '..' (fora do projeto): '{a}'."
@@ -690,19 +741,12 @@ def executar_comando(comando: str, base_dir: Optional[Path] = None) -> Dict[str,
     if executavel == "type":
         conteudos = []
         for arq in args[1:]:
-            alvo = (raiz / arq).resolve()
             try:
-                alvo.relative_to(raiz)
-            except ValueError:
+                alvo = resolver_caminho_seguro(arq, base_dir=raiz, operacao="leitura")
+            except ValueError as e:
                 return {
                     "stdout": "",
-                    "stderr": f"Acesso fora do diretório do projeto não permitido: {arq}",
-                    "codigo_saida": 1
-                }
-            if caminho_protegido(alvo, modo="leitura") or caminho_protegido(arq, modo="leitura"):
-                return {
-                    "stdout": "",
-                    "stderr": f"Acesso a caminho protegido bloqueado: {arq}",
+                    "stderr": str(e),
                     "codigo_saida": 1
                 }
             if not alvo.is_file():
@@ -817,20 +861,29 @@ def executar_comando(comando: str, base_dir: Optional[Path] = None) -> Dict[str,
         padrao = nao_flags[0]
         linhas_match = []
         for nome_arq in nao_flags[1:]:
-            p_arq = (raiz / nome_arq).resolve()
             try:
-                p_arq.relative_to(raiz)
+                p_arq = resolver_caminho_seguro(nome_arq, base_dir=raiz, operacao="leitura")
             except ValueError:
                 continue
-            if caminho_protegido(p_arq, modo="leitura") or caminho_protegido(nome_arq, modo="leitura"):
+            if not p_arq.is_file():
                 continue
-            if p_arq.is_file():
-                try:
-                    for linha in p_arq.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                if p_arq.stat().st_size > LIMITE_BUSCA_ARQUIVO_BYTES:
+                    continue
+                with open(p_arq, "rb") as f_check:
+                    chunk = f_check.read(1024)
+                    if b"\x00" in chunk:
+                        continue
+                with open(p_arq, "r", encoding="utf-8", errors="replace") as f_text:
+                    for linha in f_text:
                         if padrao in linha:
-                            linhas_match.append(linha)
-                except Exception:
-                    pass
+                            linhas_match.append(linha.rstrip("\r\n"))
+                            if len(linhas_match) >= MAX_BUSCA_RESULTADOS:
+                                break
+                if len(linhas_match) >= MAX_BUSCA_RESULTADOS:
+                    break
+            except Exception:
+                pass
         if linhas_match:
             return {"stdout": "\n".join(linhas_match) + "\n", "stderr": "", "codigo_saida": 0}
         return {"stdout": "", "stderr": "", "codigo_saida": 1}
@@ -993,12 +1046,9 @@ def buscar_no_projeto(
         for file in files:
             p = Path(root) / file
             try:
-                alvo_seguro = resolver_caminho_seguro(p, base_dir=raiz, operacao="leitura")
-            except ValueError:
-                continue
-
-            try:
-                caminho_rel = p.relative_to(raiz)
+                alvo_seguro, caminho_rel = resolver_caminho_seguro(
+                    p, base_dir=raiz, operacao="leitura", retornar_relativo=True
+                )
             except ValueError:
                 continue
 

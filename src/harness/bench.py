@@ -200,13 +200,15 @@ def rodar_benchmark(
         os.chdir(base)
 
     try:
-        for tarefa in TAREFAS_BENCH:
+        for idx, tarefa in enumerate(TAREFAS_BENCH):
             t_id = tarefa["id"]
             t_nome = tarefa["nome"]
             instrucao = tarefa["instrucao"]
             artefatos = tarefa["artefatos"]
 
-            for regime, cache_flag in [("ON", True), ("OFF", False)]:
+            # Alterna a ordem de execução para mitigar viés de aquecimento / ordem fixa
+            regimes = [("ON", True), ("OFF", False)] if (idx % 2 == 0) else [("OFF", False), ("ON", True)]
+            for regime, cache_flag in regimes:
                 # Limpeza preventiva
                 limpar_artefatos(base, artefatos)
 
