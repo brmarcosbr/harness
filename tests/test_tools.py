@@ -449,6 +449,10 @@ def test_obter_env_saneado_e_vazamento_subprocess(monkeypatch, tmp_path):
     monkeypatch.setenv("MINHA_CUSTOM_SECRET", "segredo-customizado")
     monkeypatch.setenv("APP_AUTH_TOKEN", "token-autenticacao")
     monkeypatch.setenv("AWS_ACCESS_KEY", "chave-aws")
+    monkeypatch.setenv("DB_PASSWORD", "super-senha-db")
+    monkeypatch.setenv("CONNECTION_STRING", "postgres://user:pass@host/db")
+    monkeypatch.setenv("SSH_PRIVATE_KEY", "chave-privada-ssh")
+    monkeypatch.setenv("DEFAULT_CREDENTIALS", "credenciais-default")
     monkeypatch.setenv("NORMAL_VAR", "conteudo-normal")
 
     CHAVES_CARREGADAS_ENV.add("VAR_DO_ENV_PROJETO")
@@ -460,6 +464,10 @@ def test_obter_env_saneado_e_vazamento_subprocess(monkeypatch, tmp_path):
     assert "MINHA_CUSTOM_SECRET" not in saneado
     assert "APP_AUTH_TOKEN" not in saneado
     assert "AWS_ACCESS_KEY" not in saneado
+    assert "DB_PASSWORD" not in saneado
+    assert "CONNECTION_STRING" not in saneado
+    assert "SSH_PRIVATE_KEY" not in saneado
+    assert "DEFAULT_CREDENTIALS" not in saneado
     assert "VAR_DO_ENV_PROJETO" not in saneado
     assert saneado.get("NORMAL_VAR") == "conteudo-normal"
 
@@ -473,6 +481,10 @@ def test_obter_env_saneado_e_vazamento_subprocess(monkeypatch, tmp_path):
     assert "segredo-customizado" not in res["stdout"]
     assert "token-autenticacao" not in res["stdout"]
     assert "chave-aws" not in res["stdout"]
+    assert "super-senha-db" not in res["stdout"]
+    assert "postgres://user:pass@host/db" not in res["stdout"]
+    assert "chave-privada-ssh" not in res["stdout"]
+    assert "credenciais-default" not in res["stdout"]
     assert "segredo-do-arquivo-env" not in res["stdout"]
     assert "conteudo-normal" in res["stdout"]
 

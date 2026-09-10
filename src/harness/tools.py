@@ -304,13 +304,19 @@ def _resolver_caminho_seguro(
 def obter_env_saneado(chaves_ocultas: Optional[Set[str]] = None) -> Dict[str, str]:
     """
     Função pura que retorna cópia de os.environ omitindo chaves sensíveis que terminem
-    com _API_KEY, _SECRET, _TOKEN, _KEY (case-insensitive) ou correspondam a tais sufixos,
-    bem como qualquer chave carregada a partir do arquivo .env (CHAVES_CARREGADAS_ENV)
-    ou explicitamente informada em chaves_ocultas.
+    com _API_KEY, _SECRET, _TOKEN, _KEY, _PASSWORD, _PASS, _PASSWD, _CREDENTIAL,
+    _CREDENTIALS, _DSN, _CONNECTION_STRING, _PRIVATE_KEY (case-insensitive) ou
+    correspondam a tais sufixos, bem como qualquer chave carregada a partir do
+    arquivo .env (CHAVES_CARREGADAS_ENV) ou explicitamente informada em chaves_ocultas.
     """
     env_copia = os.environ.copy()
     chaves_proibidas_extra = set(chaves_ocultas) if chaves_ocultas else set()
-    sufixos_sensiveis = ("_api_key", "_secret", "_token", "_key")
+    sufixos_sensiveis = (
+        "_api_key", "_secret", "_token", "_key",
+        "_password", "_pass", "_passwd",
+        "_credential", "_credentials",
+        "_dsn", "_connection_string", "_private_key"
+    )
 
     for k in list(env_copia.keys()):
         k_lower = k.lower()
@@ -851,16 +857,18 @@ TOOLS: List[Dict[str, Any]] = [
     {
         "name": "executar_comando",
         "description": (
-            "Executa um comando no terminal Windows (shell cmd.exe) no diretório atual de trabalho. "
-            "NÃO use comandos PowerShell (como Get-ChildItem). Comandos destrutivos são bloqueados por segurança. "
-            "Retorna stdout, stderr e o código de saída."
+            "Executa comandos estritamente permitidos por whitelist sem shell no diretório do projeto. "
+            "Permitidos: dir, type <arquivo>, python <arquivo>.py, git status|diff|log|show|ls-files, "
+            "findstr <padrao> <arquivo>, where <executavel>, echo <texto>. "
+            "Para ler, editar e buscar arquivos, prefira as ferramentas dedicadas ler_arquivo, "
+            "escrever_arquivo e buscar_no_projeto. Retorna stdout, stderr e codigo_saida."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "comando": {
                     "type": "string",
-                    "description": "O comando cmd.exe a ser executado no Windows."
+                    "description": "O comando a ser executado (ex: 'dir /b', 'python script.py', 'git status')."
                 }
             },
             "required": ["comando"]

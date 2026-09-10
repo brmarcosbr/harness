@@ -177,14 +177,14 @@ A partir do Marco W7, o harness adota uma **política de execução estrita por 
 
 ### Por que Whitelist sem Shell e Não Blocklist?
 
-A migração da abordagem de blocklist pura para a whitelist sem shell foi impulsionada por **evidências empíricas obtidas ao longo de 3 rodadas de code review multi-modelo (v1, v2, v3)**. Nessas auditorias, foram descobertos e reproduzidos **6 vetores distintos de evasão** contra a execução baseada em blocklist com `shell=True`:
+A migração da abordagem de blocklist pura para a whitelist sem shell foi impulsionada por **evidências empíricas obtidas ao longo de 3 rodadas de code review multi-modelo (v1, v2, v3)**, nas quais foram analisados **6 vetores de evasão** contra a execução baseada em blocklist com `shell=True` (5 reproduzidos nas auditorias e 1 identificado na análise arquitetural):
 
 1. **Encadeamento de Comandos via `&` ou `&&`:** Comandos permitidos mascarando instruções subsequentes perigosas (ex: `dir & type .env`).
 2. **Redirecionamentos de Saída para Arquivos Críticos:** Uso de operadores de fluxo (`echo x > .env` ou `type a > b && echo x >> .git/config`) para corromper credenciais ou histórico git.
 3. **Wrappers de Interpretador:** Invocação através de interpretadores secundários (ex: `cmd /c "type .env"` ou `powershell -c "Get-Content .env"`), contornando checagens léxicas simples.
 4. **Redirecionamento com Descritores Numéricos:** Uso de descritores de fluxo (`echo x 1> .env` ou `echo x 2>> .env`) que escapavam de regexes padrão de redirecionamento.
 5. **Escape por Aspas e Espaços:** Variações com aspas aninhadas e caminhos relativos ofuscados que o interpretador do shell decodificava em runtime.
-6. **Execução de Código Inline via Flags:** Uso de `python -c "import os; os.system('...')"` para rodar código arbitrário sem disparar as palavras-chave do shell.
+6. **Execução de Código Inline via Flags (identificado na análise arquitetural):** Uso de `python -c "import os; os.system('...')"` para rodar código arbitrário sem disparar as palavras-chave do shell.
 
 Esses testes demonstraram que **nenhuma blocklist baseada em expressões regulares é capaz de cobrir exaustivamente a gramática recursiva de um shell (`cmd.exe` ou `sh`)**. Desativar o shell (`shell=False`) e limitar a execução a uma whitelist rigorosa com validação semântica de argumentos elimina toda essa classe de ataques por definição arquitetural.
 
