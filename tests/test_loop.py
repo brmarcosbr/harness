@@ -378,6 +378,43 @@ def test_loop_rejeita_kwargs_fora_do_schema():
     assert "opcao_extra" in res_tool_ler["erro"]
 
 
+def test_loop_fallback_posicional_emite_aviso_stderr(monkeypatch, capsys):
+    # Simula tool que só aceita argumento posicional (não aceita kwargs 'comando=...')
+    def fake_tool_posicional(cmd):
+        return {"stdout": f"executado: {cmd}", "stderr": "", "codigo_saida": 0}
+
+    monkeypatch.setitem(
+        __import__("harness.loop", fromlist=["TOOL_REGISTRY"]).TOOL_REGISTRY,
+        "executar_comando",
+        fake_tool_posicional
+    )
+
+    resp1 = ProviderResponse(
+        text="",
+        tool_calls=[{"id": "call_pos", "name": "executar_comando", "args": {"comando": "dir"}}],
+        usage={"prompt": 50, "completion": 10, "total": 60, "cached": 0},
+        modelo="fake-model"
+    )
+    resp2 = ProviderResponse(
+        text="Concluido.",
+        tool_calls=[],
+        usage={"prompt": 60, "completion": 10, "total": 70, "cached": 0},
+        modelo="fake-model"
+    )
+
+    provider = FakeProvider(respostas=[resp1, resp2])
+    resultado = executar_loop(tarefa="teste fallback posicional", provider=provider, max_turns=3)
+
+    # Verifica que o fallback posicional funcionou
+    tool_msg = next(m for m in resultado.historico if m.get("role") == "tool" and m.get("tool_call_id") == "call_pos")
+    assert tool_msg["resultado"]["stdout"] == "executado: dir"
+
+    # Verifica que o aviso explícito foi emitido em stderr
+    captured = capsys.readouterr()
+    assert "[AVISO] Fallback posicional acionado para a tool 'executar_comando' com argumento 'comando'='dir'" in captured.err
+
+
+
 
 
 

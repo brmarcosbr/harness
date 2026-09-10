@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import os
+import sys
 import time
 from typing import Any, Dict, List, Optional
 from harness.config import (
@@ -7,6 +8,7 @@ from harness.config import (
     MAX_TURNOS_MANTER_PODA,
     SYSTEM_PROMPT,
     TETO_CONTEXTO_TOKENS,
+    verificar_idade_precos,
 )
 from harness.contexto import (
     PREFIXO_CONTEXTO,
@@ -74,6 +76,7 @@ def executar_loop(
     print(f"Diretório atual: {os.getcwd()}")
     if os.name != "nt":
         print("[AVISO] ambiente nao-Windows: a whitelist estrita protege multiplataforma contra comandos destrutivos; handlers nativos emulados")
+    verificar_idade_precos()
     print("-" * 60)
 
     if contexto_projeto:
@@ -204,6 +207,10 @@ def executar_loop(
                             if any(termo in msg_err for termo in termos_assinatura):
                                 # Fallback se a assinatura esperar comando posicional
                                 if "comando" in func_args and len(func_args) == 1:
+                                    sys.stderr.write(
+                                        f"[AVISO] Fallback posicional acionado para a tool '{func_name}' com argumento 'comando'={func_args['comando']!r}. "
+                                        f"Verifique o schema declarado ou a configuração do provider.\n"
+                                    )
                                     resultado_raw = tool_func(func_args["comando"])
                                 else:
                                     resultado_raw = {"sucesso": False, "erro": f"Argumentos inválidos para a função {func_name}: {func_args}"}
