@@ -864,6 +864,22 @@ def test_dir_nativo_rejeita_flags_nao_suportadas(tmp_path):
     assert "não suportada" in res_r["stderr"]
 
 
+def test_dir_nativo_sobre_arquivo_individual(tmp_path):
+    arquivo = tmp_path / "exemplo.txt"
+    arquivo.write_text("conteudo teste", encoding="utf-8")
+
+    # dir sobre arquivo existente sem flag
+    res = executar_comando("dir exemplo.txt", base_dir=tmp_path)
+    assert res["codigo_saida"] == 0
+    assert "exemplo.txt" in res["stdout"]
+
+    # dir /b sobre arquivo existente
+    res_bare = executar_comando("dir /b exemplo.txt", base_dir=tmp_path)
+    assert res_bare["codigo_saida"] == 0
+    assert res_bare["stdout"].strip() == "exemplo.txt"
+
+
+
 
 
 

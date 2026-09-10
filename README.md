@@ -3,7 +3,7 @@
 > Loop multi-turno agnóstico de provider, tool use segura e **74,6% a 76,2% de economia de custo via context caching** (benchmark real com Gemini).
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-98%2F98%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-104%2F104%20passing-brightgreen)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 ![Zero Libs](https://img.shields.io/badge/external--deps-zero-informational)
 ![CI](https://github.com/brmarcosbr/harness/actions/workflows/ci.yml/badge.svg)
@@ -134,7 +134,7 @@ O harness disponibiliza 4 ferramentas nativas para o modelo:
 - **Caminhos Protegidos:** Bloqueio total de leitura e escrita para `.env` e `.git/`, e bloqueio de escrita para `.github/` (configurados em `CAMINHOS_PROTEGIDOS`).
 - **Proteção contra Path Traversal:** Validação estrita via `Path.resolve()` garantindo que nenhum caminho acesse pastas superiores à raiz do projeto (`..` proibido).
 - **Timeouts Rígidos:** Cada execução de comando possui limite padrão de 30 segundos, prevenindo bloqueios em processos interativos ou loops infinitos.
-- **Plataforma Alvo Oficial:** O harness foi projetado para ambiente Windows (shell `cmd.exe`). Em ambientes não-Windows (Linux/macOS), o harness emite um aviso no banner indicando que a blocklist e o system prompt assumem a sintaxe do `cmd.exe` e que comandos destrutivos específicos do POSIX/Linux não são cobertos.
+- **Proteção Multiplataforma via Whitelist:** A execução de processos sem shell (`shell=False`) e restrita à whitelist de binários permitidos impede a execução de comandos destrutivos tanto no Windows (`cmd.exe`) quanto em ambientes POSIX/Linux (`rm -rf`, `mkfs`, etc.). Handlers nativos como `type`, `dir`, `where` e `findstr` contam com emulação transparente em Python para portabilidade integral.
 
 ### Limites Conhecidos da Blocklist (Mitigação vs. Sandboxing)
 
@@ -381,7 +381,7 @@ Modelo final: gemini-3.8-flash
 
 ## Executando a Suíte de Testes
 
-Os 98 testes unitários são executados 100% offline (utilizam mocks e providers fakes, sem dependência de rede ou consumo de cotas de API):
+Os 104 testes unitários são executados 100% offline (utilizam mocks e providers fakes, sem dependência de rede ou consumo de cotas de API):
 
 ```bash
 pytest tests/ -q
@@ -390,15 +390,16 @@ pytest tests/ -q
 Saída esperada:
 
 ```text
-..................................................................................................  [100%]
-98 passed in 1.50s
+........................................................................................................  [100%]
+104 passed in 2.05s
 ```
 
 Os testes cobrem:
 - Cálculo e precisão de preços (Gemini e DeepSeek com janelas de cache).
 - Resolução e validação de segurança de ferramentas (whitelist sem shell, blocklist, timeouts, path traversal).
-- Validação estrita de argumentos git e proteção contra symlink/junction traversal.
-- Saneamento de credenciais do ambiente contra vazamento em subprocessos.
+- Validação estrita de argumentos git, python, findstr, where e proteção contra symlink/junction traversal em todas as superfícies.
+- Saneamento de credenciais do ambiente contra vazamento em subprocessos (por segmento/posição de token).
+- Inversão de camadas de execução com validação primária de whitelist sem falsos positivos em comandos seguros (`echo format`).
 - Serialização e conversão de schemas nos formatos Gemini e OpenAI.
 - Normalização e parsing de respostas multi-turnos com tool calling.
 - Poda de contexto e garantia de prefix invariance.

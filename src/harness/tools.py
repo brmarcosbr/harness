@@ -701,23 +701,14 @@ def executar_comando(comando: str, base_dir: Optional[Path] = None) -> Dict[str,
         alvo_dir = raiz
         caminhos_espec = [a for a in args[1:] if not a.startswith(("/", "-"))]
         if caminhos_espec:
-            alvo_dir = (raiz / caminhos_espec[0]).resolve()
-
-        try:
-            alvo_dir.relative_to(raiz)
-        except ValueError:
-            return {
-                "stdout": "",
-                "stderr": f"Acesso fora do diretório do projeto não permitido: {caminhos_espec[0] if caminhos_espec else ''}",
-                "codigo_saida": 1
-            }
-
-        if caminho_protegido(alvo_dir, modo="leitura") or (caminhos_espec and caminho_protegido(caminhos_espec[0], modo="leitura")):
-            return {
-                "stdout": "",
-                "stderr": f"Acesso a caminho protegido bloqueado: {caminhos_espec[0] if caminhos_espec else ''}",
-                "codigo_saida": 1
-            }
+            try:
+                alvo_dir = resolver_caminho_seguro(caminhos_espec[0], base_dir=raiz, operacao="leitura")
+            except ValueError:
+                return {
+                    "stdout": "",
+                    "stderr": f"Acesso fora do diretório do projeto não permitido: {caminhos_espec[0]}",
+                    "codigo_saida": 1
+                }
 
         if not alvo_dir.exists():
             return {
@@ -727,6 +718,19 @@ def executar_comando(comando: str, base_dir: Optional[Path] = None) -> Dict[str,
             }
 
         eh_bare = any(a.lower() in ("/b", "-b") for a in args[1:])
+
+        # Se o alvo for um arquivo individual, lista as informações do próprio arquivo
+        if alvo_dir.is_file():
+            if eh_bare:
+                saida = f"{alvo_dir.name}\n"
+            else:
+                saida = f" Pasta de {alvo_dir.parent}\n\n       {alvo_dir.name}\n"
+            return {
+                "stdout": saida,
+                "stderr": "",
+                "codigo_saida": 0
+            }
+
         try:
             itens = sorted(os.listdir(alvo_dir))
         except Exception as e:

@@ -73,7 +73,7 @@ def executar_loop(
         print("Cache de contexto: OFF (prefixo instavel - simulando harness ingenuo)")
     print(f"Diretório atual: {os.getcwd()}")
     if os.name != "nt":
-        print("[AVISO] ambiente nao-Windows: a blocklist e o system prompt assumem cmd.exe; comandos Linux destrutivos NAO sao bloqueados")
+        print("[AVISO] ambiente nao-Windows: a whitelist estrita protege multiplataforma contra comandos destrutivos; handlers nativos emulados")
     print("-" * 60)
 
     if contexto_projeto:
