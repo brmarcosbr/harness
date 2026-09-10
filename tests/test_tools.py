@@ -20,6 +20,7 @@ from harness.tools import (
     obter_env_saneado,
     _tokenizar,
     validar_comando_whitelist,
+    resolver_caminho_seguro,
 )
 
 
@@ -656,12 +657,13 @@ def test_git_validacao_argumentos_e_caminhos(tmp_path):
 
 def test_symlink_e_junction_traversal_bloqueado(tmp_path):
     import os
+    from harness.contexto import gerar_contexto_repo
     raiz = tmp_path / "projeto"
     raiz.mkdir()
     fora = tmp_path / "externo"
     fora.mkdir()
     arquivo_secreto = fora / "secreto.txt"
-    arquivo_secreto.write_text("conteudo secreto", encoding="utf-8")
+    arquivo_secreto.write_text("conteudo secreto ultra confidencial", encoding="utf-8")
 
     link_criado = False
     # Tenta criar junction no Windows
@@ -681,17 +683,124 @@ def test_symlink_e_junction_traversal_bloqueado(tmp_path):
             pass
 
     if link_criado:
+        # 1. dir sobre symlink/junction
         res_dir = executar_comando("dir link_dir", base_dir=raiz)
         assert res_dir["codigo_saida"] != 0
         assert "secreto.txt" not in res_dir["stdout"]
 
+        # 2. type sobre arquivo em symlink/junction
         res_type = executar_comando("type link_dir/secreto.txt", base_dir=raiz)
         assert res_type["codigo_saida"] != 0
         assert "conteudo secreto" not in res_type["stdout"]
 
+        # 3. ler_arquivo sobre arquivo em symlink/junction
         res_ler = ler_arquivo("link_dir/secreto.txt", base_dir=raiz)
         assert res_ler["sucesso"] is False
         assert res_ler["conteudo"] == ""
+
+        # 4. escrever_arquivo sobre symlink/junction
+        res_escrever = escrever_arquivo("link_dir/novo.txt", "ataque", base_dir=raiz)
+        assert res_escrever["sucesso"] is False
+
+        # 5. buscar_no_projeto sobre projeto com symlink/junction externa
+        res_busca = buscar_no_projeto("conteudo", base_dir=raiz)
+        assert res_busca["sucesso"] is True
+        assert len(res_busca["resultados"]) == 0
+
+        # 6. gerar_contexto_repo ignorando symlink/junction externa
+        contexto = gerar_contexto_repo(raiz)
+        assert "conteudo secreto" not in contexto
+        assert "secreto.txt" not in contexto
+
+    # Validação direta da função resolver_caminho_seguro
+    with pytest.raises(ValueError, match="fora do diretório do projeto"):
+        resolver_caminho_seguro("../externo/secreto.txt", base_dir=raiz)
+
+    with pytest.raises(ValueError, match="caminho protegido"):
+        resolver_caminho_seguro(".env", base_dir=raiz)
+
+
+def test_python_validacao_argumentos_e_caminhos(tmp_path):
+    script_py = tmp_path / "script.py"
+    script_py.write_text("import sys\nprint('args:', sys.argv[1:])\n", encoding="utf-8")
+
+    # Argumento com caminho fora da raiz (..) deve ser bloqueado
+    res1 = executar_comando(r"python script.py ..\secret", base_dir=tmp_path)
+    assert res1["codigo_saida"] == -1
+    assert "fora do projeto" in res1["stderr"] or "não pode conter" in res1["stderr"]
+
+    # Argumento com caminho absoluto deve ser bloqueado
+    res2 = executar_comando("python script.py /etc/passwd", base_dir=tmp_path)
+    assert res2["codigo_saida"] == -1
+    assert "Caminho absoluto não permitido" in res2["stderr"]
+
+    # Argumento com arquivo protegido deve ser bloqueado
+    res3 = executar_comando("python script.py .env", base_dir=tmp_path)
+    assert res3["codigo_saida"] == -1
+    assert "protegido" in res3["stderr"]
+
+    # Argumento via flag --config=.env deve ser bloqueado
+    res4 = executar_comando("python script.py --config=.env", base_dir=tmp_path)
+    assert res4["codigo_saida"] == -1
+    assert "protegido" in res4["stderr"]
+
+    # Argumento via flag com caminho absoluto deve ser bloqueado
+    res5 = executar_comando("python script.py --input=/etc/passwd", base_dir=tmp_path)
+    assert res5["codigo_saida"] == -1
+    assert "Caminho absoluto não permitido" in res5["stderr"]
+
+    # Argumentos inofensivos e flags simples devem ser permitidos
+    res_ok = executar_comando("python script.py arg1 123 --verbose", base_dir=tmp_path)
+    assert res_ok["codigo_saida"] == 0
+    assert "arg1" in res_ok["stdout"]
+
+
+def test_findstr_e_where_validacao_flags_perigosas(tmp_path):
+    # findstr: flags perigosas /g:, -g:, /d:, -d:
+    res_fg = executar_comando("findstr /g:arquivo.txt padrao", base_dir=tmp_path)
+    assert res_fg["codigo_saida"] == -1
+    assert "Flag perigosa não permitida no findstr" in res_fg["stderr"]
+
+    res_fd = executar_comando("findstr /d:dir padrao", base_dir=tmp_path)
+    assert res_fd["codigo_saida"] == -1
+    assert "Flag perigosa não permitida no findstr" in res_fd["stderr"]
+
+    # where: flag recursiva arbitrária /r, -r
+    res_wr = executar_comando(r"where /r C:\Windows calc", base_dir=tmp_path)
+    assert res_wr["codigo_saida"] == -1
+    assert "Flag perigosa não permitida no where" in res_wr["stderr"]
+
+    res_wr_dash = executar_comando("where -r /usr/bin python", base_dir=tmp_path)
+    assert res_wr_dash["codigo_saida"] == -1
+    assert "Flag perigosa não permitida no where" in res_wr_dash["stderr"]
+
+
+def test_git_orderfile_bloqueado(tmp_path):
+    import subprocess
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True)
+    (tmp_path / "a.txt").write_text("conteudo a", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "commit 1"], cwd=str(tmp_path), capture_output=True)
+
+    # git diff -O / --orderfile
+    res_diff_o = executar_comando("git diff -O order.txt", base_dir=tmp_path)
+    assert res_diff_o["codigo_saida"] == -1
+    assert "Flag perigosa não permitida no git" in res_diff_o["stderr"]
+
+    res_diff_orderfile = executar_comando("git diff --orderfile=order.txt", base_dir=tmp_path)
+    assert res_diff_orderfile["codigo_saida"] == -1
+    assert "Flag perigosa não permitida no git" in res_diff_orderfile["stderr"]
+
+    # git log -O / --orderfile
+    res_log_o = executar_comando("git log -O order.txt", base_dir=tmp_path)
+    assert res_log_o["codigo_saida"] == -1
+    assert "Flag perigosa não permitida no git" in res_log_o["stderr"]
+
+    res_log_orderfile = executar_comando("git log --orderfile=order.txt", base_dir=tmp_path)
+    assert res_log_orderfile["codigo_saida"] == -1
+    assert "Flag perigosa não permitida no git" in res_log_orderfile["stderr"]
 
 
 def test_comando_bloqueado_sem_falsos_positivos():

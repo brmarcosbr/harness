@@ -513,3 +513,34 @@ def test_gerar_contexto_repo_filtra_caminhos_protegidos(tmp_path, monkeypatch):
     assert "DADO_ULTRA_SECRETO" not in contexto
     assert "pasta_secreta" not in contexto
 
+
+def test_gerar_contexto_repo_filtra_symlinks_e_junctions_externas(tmp_path):
+    import os
+    raiz = tmp_path / "repo"
+    raiz.mkdir()
+    (raiz / "codigo.py").write_text("def principal(): pass", encoding="utf-8")
+
+    externo = tmp_path / "externo"
+    externo.mkdir()
+    (externo / "segredo_fora.txt").write_text("CHAVE_SECRETA_FORA = 999", encoding="utf-8")
+
+    link_criado = False
+    try:
+        import _winapi
+        _winapi.CreateJunction(str(externo), str(raiz / "link_externo"))
+        link_criado = True
+    except Exception:
+        pass
+
+    if not link_criado:
+        try:
+            os.symlink(str(externo), str(raiz / "link_externo"))
+            link_criado = True
+        except OSError:
+            pass
+
+    contexto = gerar_contexto_repo(raiz)
+    assert "codigo.py" in contexto
+    assert "CHAVE_SECRETA_FORA" not in contexto
+    assert "segredo_fora.txt" not in contexto
+

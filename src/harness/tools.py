@@ -286,27 +286,40 @@ def truncar_saida(texto: Any, limite: int = LIMITE_TRUNCAMENTO_SAIDA) -> str:
     return texto
 
 
-def _resolver_caminho_seguro(
-    caminho: str,
+def resolver_caminho_seguro(
+    caminho: Union[str, Path],
     base_dir: Optional[Path] = None,
     operacao: str = "leitura"
 ) -> Path:
     """
     Valida e resolve o caminho relativo ao base_dir (default cwd).
-    Levanta ValueError se tentar path traversal para fora do base_dir
+    Levanta ValueError se tentar path traversal para fora do base_dir,
+    se o alvo resolvido escapar da raiz via symlink/junction,
     ou se tentar acessar caminhos protegidos do projeto via caminho_protegido.
     """
     raiz = (base_dir or Path.cwd()).resolve()
-    alvo = (raiz / caminho).resolve()
+    caminho_obj = Path(caminho)
+    if caminho_obj.is_absolute():
+        alvo = caminho_obj.resolve()
+    else:
+        alvo = (raiz / caminho_obj).resolve()
+
     try:
         relativo = alvo.relative_to(raiz)
     except ValueError:
         raise ValueError(f"Caminho fora do diretório do projeto: {caminho}")
 
-    if caminho_protegido(relativo, modo=operacao) or caminho_protegido(caminho, modo=operacao):
+    if (
+        caminho_protegido(relativo, modo=operacao)
+        or caminho_protegido(caminho, modo=operacao)
+        or caminho_protegido(alvo, modo=operacao)
+    ):
         raise ValueError(f"caminho protegido: {caminho}")
 
     return alvo
+
+
+_resolver_caminho_seguro = resolver_caminho_seguro
 
 
 def obter_env_saneado(chaves_ocultas: Optional[Set[str]] = None) -> Dict[str, str]:
@@ -431,14 +444,39 @@ def validar_comando_whitelist(
         if caminho_protegido(alvo_py, modo="leitura"):
             return f"Acesso a caminho protegido bloqueado: '{alvo_py}'."
 
-        arquivo_alvo = (raiz / alvo_py).resolve()
         try:
-            arquivo_alvo.relative_to(raiz)
+            arquivo_alvo = resolver_caminho_seguro(alvo_py, base_dir=raiz, operacao="leitura")
         except ValueError:
             return f"Arquivo fora do diretório do projeto: '{alvo_py}'."
 
         if not arquivo_alvo.is_file():
             return f"Arquivo Python não encontrado: '{alvo_py}'."
+
+        # Validação de argumentos passados ao script (args[2:])
+        for a in args[2:]:
+            valor_para_checar = a.split("=", 1)[1] if ("=" in a and a.startswith("-")) else a
+
+            if a.startswith("-") and "=" not in a:
+                continue
+
+            if (
+                Path(valor_para_checar).is_absolute()
+                or (len(valor_para_checar) >= 2 and valor_para_checar[1] == ":")
+                or valor_para_checar.startswith(("/", "\\"))
+            ):
+                return f"Caminho absoluto não permitido em argumento do Python: '{a}'."
+
+            partes_arg = valor_para_checar.replace("\\", "/").split("/")
+            if ".." in partes_arg:
+                return f"Caminho não pode conter '..' (fora do projeto): '{a}'."
+
+            if caminho_protegido(valor_para_checar, modo="leitura"):
+                return f"Acesso a caminho protegido bloqueado em argumento do Python: '{a}'."
+
+            try:
+                alvo_arg = resolver_caminho_seguro(valor_para_checar, base_dir=raiz, operacao="leitura")
+            except ValueError:
+                return f"Caminho fora do diretório do projeto em argumento do Python: '{a}'."
 
     elif executavel == "git":
         if len(args) < 2:
@@ -456,7 +494,15 @@ def validar_comando_whitelist(
 
         for a in args[2:]:
             a_lower = a.lower()
-            if a_lower in flags_perigosas or any(a_lower.startswith(f"{f}=") or a_lower == f for f in flags_perigosas):
+            if (
+                a_lower in flags_perigosas
+                or any(a_lower.startswith(f"{f}=") or a_lower == f for f in flags_perigosas)
+                or a_lower == "--orderfile"
+                or a_lower.startswith("--orderfile=")
+                or a == "-O"
+                or a.startswith("-O=")
+                or (a.startswith("-O") and len(a) > 2 and not a[2].isspace())
+            ):
                 return f"Flag perigosa não permitida no git: '{a}'."
 
             if a_lower.startswith("--output") or a_lower.startswith("-o=") or a_lower == "-o":
@@ -479,17 +525,15 @@ def validar_comando_whitelist(
                     return f"Caminho não pode conter '..' (fora do projeto): '{a}'."
                 if caminho_protegido(caminho_rev, modo="leitura"):
                     return f"Acesso a caminho protegido bloqueado no git: '{a}'."
-                alvo_rev = (raiz / caminho_rev).resolve()
                 try:
-                    alvo_rev.relative_to(raiz)
+                    alvo_rev = resolver_caminho_seguro(caminho_rev, base_dir=raiz, operacao="leitura")
                 except ValueError:
                     return f"Caminho fora do diretório do projeto: '{a}'."
             elif not a.startswith("-"):
                 if caminho_protegido(a, modo="leitura"):
                     return f"Acesso a caminho protegido bloqueado no git: '{a}'."
-                alvo = (raiz / a).resolve()
                 try:
-                    alvo.relative_to(raiz)
+                    alvo = resolver_caminho_seguro(a, base_dir=raiz, operacao="leitura")
                 except ValueError:
                     return f"Caminho fora do diretório do projeto: '{a}'."
 
@@ -502,6 +546,21 @@ def validar_comando_whitelist(
             if flags_inv:
                 return f"Flag não suportada para 'dir': '{flags_inv[0]}'. O comando 'dir' suporta apenas a flag '/b'."
 
+        if executavel == "findstr":
+            for a in args[1:]:
+                a_lower = a.lower()
+                if (
+                    a_lower in ("/g", "-g", "/d", "-d")
+                    or a_lower.startswith(("/g:", "-g:", "/d:", "-d:"))
+                ):
+                    return f"Flag perigosa não permitida no findstr: '{a}'."
+
+        if executavel == "where":
+            for a in args[1:]:
+                a_lower = a.lower()
+                if a_lower in ("/r", "-r") or a_lower.startswith(("/r:", "-r:")):
+                    return f"Flag perigosa não permitida no where: '{a}'."
+
         for a in args[1:]:
             # Ignora flags de comando (como /b, -b, -n)
             if a.startswith(("/", "-")):
@@ -513,13 +572,10 @@ def validar_comando_whitelist(
                 return f"Caminho absoluto não permitido: '{a}'."
             if caminho_protegido(a, modo="leitura"):
                 return f"Acesso a caminho protegido bloqueado: '{a}'."
-            alvo_cand = (raiz / a).resolve()
             try:
-                alvo_cand.relative_to(raiz)
+                alvo_cand = resolver_caminho_seguro(a, base_dir=raiz, operacao="leitura")
             except ValueError:
                 return f"Caminho fora do diretório do projeto: '{a}'."
-            if caminho_protegido(alvo_cand, modo="leitura"):
-                return f"Acesso a caminho protegido bloqueado: '{a}'."
 
     elif executavel == "echo":
         # echo é permitido sem validação de caminhos (sem shell, metacaracteres não redirecionam)
@@ -854,31 +910,44 @@ def buscar_no_projeto(
     resultados: List[str] = []
 
     for root, dirs, files in os.walk(raiz):
-        # Ignora pastas proibidas e protegidas in-place
-        dirs[:] = [
-            d for d in dirs
-            if d not in DIRS_IGNORADOS_BUSCA and not caminho_protegido(d, modo="leitura")
-        ]
+        # Ignora pastas proibidas e protegidas in-place com validação de caminho seguro
+        dirs_validos = []
+        for d in dirs:
+            if d in DIRS_IGNORADOS_BUSCA:
+                continue
+            p_dir = Path(root) / d
+            try:
+                resolver_caminho_seguro(p_dir, base_dir=raiz, operacao="leitura")
+                dirs_validos.append(d)
+            except ValueError:
+                continue
+        dirs[:] = dirs_validos
 
         for file in files:
             p = Path(root) / file
-            caminho_rel = p.relative_to(raiz)
-            if caminho_protegido(caminho_rel, modo="leitura"):
-                continue
-
-            if ext_filtro and p.suffix.lower() != ext_filtro:
+            try:
+                alvo_seguro = resolver_caminho_seguro(p, base_dir=raiz, operacao="leitura")
+            except ValueError:
                 continue
 
             try:
-                if p.stat().st_size > LIMITE_BUSCA_ARQUIVO_BYTES:
+                caminho_rel = p.relative_to(raiz)
+            except ValueError:
+                continue
+
+            if ext_filtro and alvo_seguro.suffix.lower() != ext_filtro:
+                continue
+
+            try:
+                if alvo_seguro.stat().st_size > LIMITE_BUSCA_ARQUIVO_BYTES:
                     continue
                 # Lê amostra para checar se é binário
-                with open(p, "rb") as f_check:
+                with open(alvo_seguro, "rb") as f_check:
                     chunk = f_check.read(1024)
                     if b"\x00" in chunk:
                         continue
 
-                with open(p, "r", encoding="utf-8", errors="replace") as f_text:
+                with open(alvo_seguro, "r", encoding="utf-8", errors="replace") as f_text:
                     for num_linha, linha in enumerate(f_text, start=1):
                         linha_busca = linha[:500]
                         if regex.search(linha_busca):
