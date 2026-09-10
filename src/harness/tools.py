@@ -18,7 +18,7 @@ from harness.env import CHAVES_CARREGADAS_ENV
 
 # Padrões bloqueados de comandos destrutivos de sistema no Windows / cmd.exe
 PADROES_BLOQUEADOS = [
-    r"(?:^|[&|;])\s*format(?:\.exe)?(?:\s+|$)",
+    r"(?:^|[&|;])\s*format(?:\.(?:exe|com))?(?:\s+|$)",
     r"\bdiskpart\b",
     r"\bshutdown\b",
     r"\brd\s+/[sq]\b|\brd\b.*/[sq]",
@@ -390,7 +390,7 @@ def obter_env_saneado(chaves_ocultas: Optional[Set[str]] = None) -> Dict[str, st
         k_upper = k.upper()
         if k_upper in variaveis_preservadas and k not in CHAVES_CARREGADAS_ENV and k not in chaves_proibidas_extra:
             continue
-        segmentos = set(k_upper.split("_"))
+        segmentos = set(re.split(r"[_.]", k_upper))
         if (
             segmentos & termos_sensiveis
             or any(k_upper.startswith(p) for p in prefixos_sensiveis)

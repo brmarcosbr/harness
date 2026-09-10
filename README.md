@@ -3,7 +3,7 @@
 > Loop multi-turno agnóstico de provider, tool use segura e **74,6% a 76,2% de economia de custo via context caching** (benchmark real com Gemini).
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-126%2F126%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-128%2F128%20passing-brightgreen)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 ![Zero Libs](https://img.shields.io/badge/external--deps-zero-informational)
 ![CI](https://github.com/brmarcosbr/harness/actions/workflows/ci.yml/badge.svg)
@@ -382,7 +382,7 @@ Modelo final: gemini-3.8-flash
 
 ## Executando a Suíte de Testes
 
-Os 126 testes unitários são executados 100% offline (utilizam mocks e providers fakes, sem dependência de rede ou consumo de cotas de API):
+Os 128 testes unitários são executados 100% offline (utilizam mocks e providers fakes, sem dependência de rede ou consumo de cotas de API):
 
 ```bash
 pytest tests/ -q
@@ -391,8 +391,8 @@ pytest tests/ -q
 Saída esperada:
 
 ```text
-..............................................................................................................................  [100%]
-126 passed in 2.05s
+................................................................................................................................  [100%]
+128 passed in 2.05s
 ```
 
 Os testes cobrem:

@@ -1218,13 +1218,24 @@ def test_readme_contagem_testes_sincronizada():
 
     tests_dir = raiz / "tests"
 
-    # Conta todas as funções test_* nos arquivos test_*.py
-    total_testes = sum(
-        1
-        for f in tests_dir.glob("test_*.py")
-        for node in ast.walk(ast.parse(f.read_text(encoding="utf-8")))
-        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")
-    )
+    def _contar_testes_arquivo(f: Path) -> int:
+        count = 0
+        tree = ast.parse(f.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
+                multiplicador = 1
+                for dec in getattr(node, "decorator_list", []):
+                    if (
+                        isinstance(dec, ast.Call)
+                        and isinstance(dec.func, ast.Attribute)
+                        and dec.func.attr == "parametrize"
+                    ):
+                        if len(dec.args) >= 2 and isinstance(dec.args[1], (ast.List, ast.Tuple)):
+                            multiplicador *= len(dec.args[1].elts)
+                count += multiplicador
+        return count
+
+    total_testes = sum(_contar_testes_arquivo(f) for f in tests_dir.glob("test_*.py"))
 
     readme_texto = readme_path.read_text(encoding="utf-8")
 
@@ -1519,6 +1530,48 @@ def test_desescapar_caminho_git_octal_e_aspas():
     c3 = _desescapar_caminho_git(r'"a/sub/\"minha_pasta\"/.env"')
     assert c3 == 'sub/"minha_pasta"/.env'
     assert caminho_protegido(c3) is True
+
+
+def test_format_com_bloqueado():
+    # format.com deve ser bloqueado na blocklist
+    assert comando_bloqueado("format.com C:") is not None
+    assert comando_bloqueado("format.com D: /FS:NTFS") is not None
+    assert comando_bloqueado("format.com") is not None
+    assert comando_bloqueado("echo oi & format.com C:") is not None
+
+
+def test_obter_env_saneado_com_ponto_e_diff_janela_chunk(monkeypatch):
+    from harness.tools import _filtrar_saida_git
+
+    # 1. Variáveis com '.' delimitador
+    monkeypatch.setenv("MY.PASSWORD", "segredo_com_ponto")
+    monkeypatch.setenv("APP.SECRET.KEY", "chave_com_ponto")
+    monkeypatch.setenv("DB.AUTH", "auth_com_ponto")
+    monkeypatch.setenv("APP.SAFE.CONFIG", "valor_seguro")
+
+    env_saneado = obter_env_saneado()
+    assert "MY.PASSWORD" not in env_saneado
+    assert "APP.SECRET.KEY" not in env_saneado
+    assert "DB.AUTH" not in env_saneado
+    assert env_saneado.get("APP.SAFE.CONFIG") == "valor_seguro"
+
+    # 2. Janela de cabeçalho do diff com muitas linhas antes do chunk @@
+    diff_longo_cabecalho = (
+        "diff --git a/pasta/antiga/app.py b/pasta/nova/app.py\n"
+        "similarity index 98%\n"
+        "rename from pasta/antiga/app.py\n"
+        "rename to pasta/nova/app.py\n"
+        "dissimilarity index 2%\n"
+        "index abcdef1..1234567 100644\n"
+        "--- a/pasta/antiga/.env\n"
+        "+++ b/pasta/nova/.env\n"
+        "@@ -1,3 +1,3 @@\n"
+        "+CONTEUDO_VAZADO=TRUE\n"
+    )
+    saida_filtrada = _filtrar_saida_git(diff_longo_cabecalho)
+    assert "CONTEUDO_VAZADO=TRUE" not in saida_filtrada
+    assert "[conteúdo de arquivo protegido omitido pela política de segurança]" in saida_filtrada
+
 
 
 
