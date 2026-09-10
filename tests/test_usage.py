@@ -78,3 +78,39 @@ def test_calcular_custo_sem_cache():
         precos=precos
     )
     assert pytest.approx(custo, rel=1e-6) == 0.000155
+
+
+def test_precos_aviso_data_antiga_e_override_ambiente(monkeypatch, capsys):
+    from datetime import date, timedelta
+    from harness.config import (
+        PRECOS_CONFERIDOS_EM,
+        PROVIDER_PRECOS,
+        TABELA_PRECOS_PADRAO,
+        verificar_idade_precos,
+    )
+
+    # 1. Com data recente (ou None padrão se PRECOS_CONFERIDOS_EM for recente)
+    data_hoje = date.today().isoformat()
+    assert verificar_idade_precos(data_conferencia=data_hoje, limite_dias=180) is False
+    assert capsys.readouterr().err == ""
+
+    # 2. Com data antiga simulada (> 180 dias atrás), emite aviso em stderr
+    data_antiga = (date.today() - timedelta(days=200)).isoformat()
+    assert verificar_idade_precos(data_conferencia=data_antiga, limite_dias=180) is True
+    err_output = capsys.readouterr().err
+    assert "[AVISO] Tabela de preços de LLM não é atualizada" in err_output
+    assert data_antiga in err_output
+
+    # 3. Com override via variáveis de ambiente PRECO_*
+    monkeypatch.setenv("PRECO_GEMINI_INPUT", "0.99")
+    monkeypatch.setenv("PRECO_OPENAI_OUTPUT", "1.25")
+    monkeypatch.setenv("PRECO_DEEPSEEK_CACHE", "0.015")
+
+    assert PROVIDER_PRECOS["gemini"]["input"] == 0.99
+    assert PROVIDER_PRECOS["openai"]["output"] == 1.25
+    assert PROVIDER_PRECOS["deepseek"]["cache"] == 0.015
+
+    # 4. Sem variáveis de ambiente, mantém o padrão
+    monkeypatch.delenv("PRECO_GEMINI_INPUT", raising=False)
+    assert PROVIDER_PRECOS["gemini"]["input"] == TABELA_PRECOS_PADRAO["gemini"]["input"]
+

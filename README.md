@@ -3,7 +3,7 @@
 > Loop multi-turno agnóstico de provider, tool use segura e **74,6% a 76,2% de economia de custo via context caching** (benchmark real com Gemini).
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-135%2F135%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-140%2F140%20passing-brightgreen)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 ![Zero Libs](https://img.shields.io/badge/external--deps-zero-informational)
 ![CI](https://github.com/brmarcosbr/harness/actions/workflows/ci.yml/badge.svg)
@@ -172,14 +172,15 @@ A partir do Marco W7 (e consolidação W7.7), o harness adota uma **política de
         - **Allowlist de Flags:** Para `status`, aceitam-se apenas flags de metadados (`--short`, `-s`, `--porcelain`, `--branch`, `-b`, `--untracked-files`, `-u`, `--ignored`, `--long`), bloqueando `-v`, `-vv`, `--verbose`, `-z`, `--null`. Para `ls-files`, aceitam-se apenas metadados (`--cached`, `-c`, `--others`, `-o`, `--stage`, `-s`, `-t`, `--full-name`, `--exclude-standard`, etc.). Para `log`, exige-se `--oneline` e aceitam-se `--stat`, `-n <N>`, `-n<N>`, `--max-count=<N>` e caminhos seguros.
         - **Pathspec Magic:** Qualquer argumento com prefixo `:` (ex.: `:(top).env`) é categoricamente rejeitado para impedir evasão de filtros de caminho.
         - **Redator Fail-Safe com Suporte a NUL:** Saídas são inspecionadas por linha e por registros NUL (`\x00`). Linhas ou registros que citem arquivos protegidos (incluindo padrões de renomeação `{old => new}`) são sumariamente omitidos.
-        - **Trade-off de Super-Redação:** Mensagens de commit que citem arquivos protegidos (ex.: `add .env`) fazem a linha inteira correspondente de `git log --oneline` ser omitida da resposta ao modelo. Essa escolha deliberada de segurança previne que títulos de commits vazem nomes ou referências a segredos.
-     - `findstr`: Busca textual rápida (com fallback transparente em plataformas não-Windows, atuando como busca por substring direta em arquivos sem suporte a flags avançadas do findstr nativo do Windows).
-     - `where`: Localização de executáveis seguros no PATH (com fallback cross-platform via `shutil.which`, tratando automaticamente o mapeamento de `python` para `python3` caso necessário).
-     - `echo`: Impressão de texto no terminal (sem permitir redirecionamento via shell).
-   - Qualquer binário fora da whitelist (ex: `rm`, `del`, `curl`, `powershell`, `cmd`, `bash`, `sh`, `nc`) é bloqueado imediatamente com código de saída `-1` e mensagem explicativa.
+         - **Trade-off de Super-Redação e Métrica de Auditoria:** Mensagens de commit que citem arquivos protegidos (ex.: `add .env`) fazem a linha inteira correspondente de `git log --oneline` ser omitida da resposta ao modelo. O redator contabiliza o total de linhas/registros omitidos e emite um log de auditoria em `stderr` para o desenvolvedor, sem expor métricas ao modelo para evitar inferência sobre a existência de arquivos protegidos.
+      - `findstr`: Busca textual rápida (com fallback transparente em plataformas não-Windows, atuando como busca por substring direta em arquivos sem suporte a flags avançadas do findstr nativo do Windows).
+      - `where`: Localização de executáveis seguros no PATH (com fallback cross-platform via `shutil.which`, tratando automaticamente o mapeamento de `python` para `python3` caso necessário).
+      - `echo`: Impressão de texto no terminal (sem permitir redirecionamento via shell).
+    - Qualquer binário fora da whitelist (ex: `rm`, `del`, `curl`, `powershell`, `cmd`, `bash`, `sh`, `nc`) é bloqueado imediatamente com código de saída `-1` e mensagem explicativa.
 
-2. **Camada Secundária (Blocklist e Proteção de Caminhos — Defesa em Profundidade):**
-   - Como salvaguarda adicional, comandos passam previamente por `comando_bloqueado` (verificação contra `PADROES_BLOQUEADOS`) e por `comando_toca_protegido`, assegurando que nenhum argumento tente ler ou alterar arquivos protegidos (`.env`, `.git/`, `.github/`).
+2. **Camada Secundária (Blocklist de Verbos e Proteção de Redirecionamentos — Defesa em Profundidade):**
+   - **Aplicação Exclusiva no Verbo (Eliminação de Falsos Positivos em Leitura):** A blocklist de padrões destrutivos (`PADROES_BLOQUEADOS`) é avaliada exclusivamente contra o **verbo** do comando (e comandos internos de wrappers `cmd /c` ou `powershell -c`), nunca sobre o corpo dos argumentos. Evidência: buscas legítimas como `findstr "rm -rf" DOC.md` ou `findstr shutdown DOC.md` eram indevidamente recusadas (`rc=-1`), enquanto `findstr "format C:"` passava. Com a execução sem shell (`shell=False`), binários de leitura autorizados não executam comandos embutidos em texto, tornando seguro e necessário restringir a blocklist ao verbo executado.
+   - Como salvaguarda adicional de retaguarda, verbos destrutivos (`format`, `diskpart`, `shutdown`, `rm`, `del`, etc.) e redirecionamentos para arquivos protegidos (`.env`, `.git/`, `.github/`) são interceptados categoricamente.
 
 ### Por que Whitelist sem Shell e Não Blocklist?
 
@@ -388,7 +389,7 @@ Modelo final: gemini-3.8-flash
 
 ## Executando a Suíte de Testes
 
-Os 135 testes unitários são executados 100% offline (utilizam mocks e providers fakes, sem dependência de rede ou consumo de cotas de API):
+Os 140 testes unitários são executados 100% offline (utilizam mocks e providers fakes, sem dependência de rede ou consumo de cotas de API):
 
 ```bash
 pytest tests/ -q
@@ -397,16 +398,19 @@ pytest tests/ -q
 Saída esperada:
 
 ```text
-.......................................................................................................................................  [100%]
-135 passed in 2.75s
+............................................................................................................................................  [100%]
+140 passed in 2.75s
 ```
 
 Os testes cobrem:
-- Cálculo e precisão de preços (Gemini e DeepSeek com janelas de cache).
-- Resolução e validação de segurança de ferramentas (whitelist sem shell, blocklist, timeouts, path traversal).
+- Cálculo e precisão de preços (Gemini e DeepSeek com janelas de cache, data de conferência e overrides por ambiente `PRECO_*`).
+- Resolução e validação de segurança de ferramentas (whitelist sem shell, blocklist estrita em verbos, timeouts, path traversal).
+- Garantia auditável de metacaracteres como literais (`dir & rm -rf /`, `type a.txt > b.txt` sem sobrescrita).
 - Validação estrita de argumentos git, python, findstr, where e proteção contra symlink/junction traversal em todas as superfícies.
+- Métrica de auditoria de super-redação do git com notificação em `stderr` (sem vazamento para o modelo).
+- Visibilidade com aviso em `stderr` quando acionado o fallback posicional de tools no loop.
 - Saneamento de credenciais do ambiente contra vazamento em subprocessos (por segmento/posição de token).
-- Inversão de camadas de execução com validação primária de whitelist sem falsos positivos em comandos seguros (`echo format`).
+- Inversão de camadas de execução com validação primária de whitelist sem falsos positivos em comandos seguros (`echo format`, `findstr "rm -rf"`).
 - Serialização e conversão de schemas nos formatos Gemini e OpenAI.
 - Normalização e parsing de respostas multi-turnos com tool calling.
 - Poda de contexto e garantia de prefix invariance.

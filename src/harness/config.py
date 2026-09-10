@@ -1,6 +1,11 @@
-"""Configurações e constantes do Agent Harness."""
+import os
+import sys
+from datetime import date
+from typing import Any, Dict, Optional
 
-from typing import Any, Dict
+# Data da última conferência oficial dos preços tabelados (formato ISO YYYY-MM-DD)
+PRECOS_CONFERIDOS_EM: str = "2026-09-01"
+LIMITE_DIAS_AVISO_PRECOS: int = 180  # 6 meses (~180 dias)
 
 # Preços oficiais por 1 milhão de tokens (USD)
 # Gemini: https://ai.google.dev/pricing (Paid tier Standard, conferido em set/2026)
@@ -11,7 +16,7 @@ from typing import Any, Dict
 #   - Peak (seg-sex 01:00-04:00 e 06:00-10:00 UTC):
 #       preço = 2x o valor off-peak (input: $0.44 / output: $1.32 / cache: $0.014 / 1M)
 # NOTA: O custo calculado pelo harness é uma estimativa baseada nos valores OFF-PEAK.
-PROVIDER_PRECOS: Dict[str, Dict[str, float]] = {
+TABELA_PRECOS_PADRAO: Dict[str, Dict[str, float]] = {
     "gemini": {
         # Preços gemini-3.8-flash: promoção até 31/12/2026; dobra a partir de 01/01/2027
         # (input 1.50, output 7.50, cache 0.15) — página ai.google.dev/pricing
@@ -31,6 +36,85 @@ PROVIDER_PRECOS: Dict[str, Dict[str, float]] = {
         "cache": 0.075,
     }
 }
+
+
+def obter_precos_com_override() -> Dict[str, Dict[str, float]]:
+    """
+    Retorna a tabela de preços dos providers com eventuais overrides definidos
+    via variáveis de ambiente (ex.: PRECO_GEMINI_INPUT=0.50, PRECO_OPENAI_OUTPUT=0.80).
+    Também aceita aliases 'prompt' para input e 'completion' para output.
+    """
+    precos = {p: dict(valores) for p, valores in TABELA_PRECOS_PADRAO.items()}
+    for chave, val_str in os.environ.items():
+        if not chave.startswith("PRECO_"):
+            continue
+        partes = chave[len("PRECO_"):].lower().split("_")
+        if len(partes) >= 2:
+            provider = partes[0]
+            campo = "_".join(partes[1:])
+            if campo == "prompt":
+                campo = "input"
+            elif campo == "completion":
+                campo = "output"
+            if provider in precos and campo in ("input", "output", "cache"):
+                try:
+                    precos[provider][campo] = float(val_str)
+                except ValueError:
+                    pass
+    return precos
+
+
+def verificar_idade_precos(
+    data_conferencia: Optional[str] = None,
+    limite_dias: int = LIMITE_DIAS_AVISO_PRECOS,
+) -> bool:
+    """
+    Verifica se a tabela de preços de LLM está desatualizada (> limite_dias).
+    Emite aviso explicativo em sys.stderr se a data estiver vencida.
+    Retorna True se emitiu aviso, False caso contrário.
+    """
+    data_str = data_conferencia or PRECOS_CONFERIDOS_EM
+    try:
+        dt_conf = date.fromisoformat(data_str)
+    except Exception:
+        return False
+
+    hoje = date.today()
+    dias = (hoje - dt_conf).days
+    if dias > limite_dias:
+        sys.stderr.write(
+            f"[AVISO] Tabela de preços de LLM não é atualizada há {dias} dias "
+            f"(última conferência: {data_str}, limite: {limite_dias} dias). "
+            f"Verifique os preços em config.py ou use variáveis de ambiente PRECO_<PROVIDER>_<CAMPO>.\n"
+        )
+        return True
+    return False
+
+
+class _ProviderPrecosDict(dict):
+    """Dict dinâmico que reflete overrides de variáveis de ambiente PRECO_* em tempo de execução."""
+
+    def __getitem__(self, key: str) -> Dict[str, float]:
+        return obter_precos_com_override()[key]
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return obter_precos_com_override().get(key, default)
+
+    def items(self):
+        return obter_precos_com_override().items()
+
+    def values(self):
+        return obter_precos_com_override().values()
+
+    def __iter__(self):
+        return iter(obter_precos_com_override())
+
+    def __contains__(self, key: object) -> bool:
+        return key in obter_precos_com_override()
+
+
+PROVIDER_PRECOS: Dict[str, Dict[str, float]] = _ProviderPrecosDict()
+
 
 # Modelos padrão para cada provider
 DEFAULT_MODELS = {

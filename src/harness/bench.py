@@ -6,6 +6,7 @@ import re
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+from harness.config import verificar_idade_precos
 from harness.contexto import gerar_contexto_repo
 from harness.loop import LoopResult, executar_loop
 from harness.providers import Provider
@@ -191,6 +192,7 @@ def rodar_benchmark(
     Limpa os artefatos de cada tarefa antes e depois da execução.
     Se base_dir for fornecido, executa no diretório com garantia de restauração via try/finally.
     """
+    verificar_idade_precos()
     base = Path(base_dir).resolve() if base_dir else Path.cwd().resolve()
     contexto_repo = gerar_contexto_repo(base)
     resultados: List[Dict[str, Any]] = []
