@@ -1631,6 +1631,33 @@ def test_obter_env_saneado_com_ponto_e_diff_janela_chunk(monkeypatch):
     assert "[conteúdo de arquivo protegido omitido pela política de segurança]" in saida_filtrada
 
 
+def test_git_checagem_objeto_fail_closed_em_excecao(tmp_path, monkeypatch):
+    import subprocess
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True)
+
+    (tmp_path / "app.py").write_text("print('hello')", encoding="utf-8")
+    subprocess.run(["git", "add", "app.py"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), capture_output=True)
+
+    real_run = subprocess.run
+
+    def mock_subprocess_run(cmd, *args, **kwargs):
+        # Se for a checagem git cat-file, simula erro/timeout
+        if isinstance(cmd, list) and len(cmd) >= 2 and cmd[0] == "git" and cmd[1] == "cat-file":
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=5)
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", mock_subprocess_run)
+
+    # O comando deve ser RECUSADO fail-closed, e NÃO cair para o ramo de caminho
+    res = executar_comando("git show --stat HEAD", base_dir=tmp_path)
+    assert res["codigo_saida"] == -1
+    assert "Falha na verificação de segurança do objeto git" in res["stderr"]
+
+
+
 
 
 

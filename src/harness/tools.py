@@ -611,8 +611,8 @@ def validar_comando_whitelist(
                     )
                     if res_cat.returncode == 0 and res_cat.stdout.strip() == "tree":
                         return f"Objeto git do tipo tree não permitido no git: '{a}'."
-                except Exception:
-                    pass
+                except Exception as e:
+                    return f"Falha na verificação de segurança do objeto git: '{a}' ({e})."
             elif not a.startswith("-"):
                 if a == "--":
                     continue
@@ -655,8 +655,8 @@ def validar_comando_whitelist(
                                 e_objeto_git = True
                             else:
                                 return f"Tipo de objeto git não permitido no git {subcmd}: '{a}'."
-                except Exception:
-                    pass
+                except Exception as e:
+                    return f"Falha na verificação de segurança do objeto git: '{a}' ({e})."
 
                 if not e_objeto_git:
                     try:
