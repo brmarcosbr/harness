@@ -410,5 +410,34 @@ def test_buscar_no_projeto_protecao_redos(tmp_path):
     assert res_dentro["total"] == 1
 
 
+def test_comando_bloqueado_wrappers_e_evasao():
+    # Comandos com wrappers envolvendo caminhos protegidos devem ser bloqueados
+    comandos_evasivos_proibidos = [
+        'cmd /c "type .env"',
+        'cmd /k "type .env"',
+        'cmd.exe /c "type .env"',
+        'powershell -c "Get-Content .env"',
+        'powershell -Command "Get-Content .env"',
+        'pwsh -c "Get-Content .env"',
+        'cmd /c "copy a.txt .env"',
+        'cmd /c "type sub/.env"',
+        'powershell -c "gc .env"',
+    ]
+    for cmd in comandos_evasivos_proibidos:
+        assert comando_bloqueado(cmd) is not None, f"Deveria ter bloqueado comando evasivo: {cmd}"
+
+    # Comandos inofensivos em wrappers devem continuar permitidos
+    comandos_inofensivos = [
+        'cmd /c "dir"',
+        'cmd /c "echo hello"',
+        'powershell -c "Get-ChildItem"',
+        'powershell -Command "Get-ChildItem -Path ."',
+        'pwsh -c "Get-ChildItem"',
+    ]
+    for cmd in comandos_inofensivos:
+        assert comando_bloqueado(cmd) is None, f"Deveria ter permitido comando seguro: {cmd}"
+
+
+
 
 

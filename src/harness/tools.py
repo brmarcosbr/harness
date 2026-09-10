@@ -126,6 +126,27 @@ def _destino_redirecionamento_e_protegido(destino: str) -> bool:
     return caminho_protegido(destino, modo="escrita")
 
 
+def _desmembrar_wrappers(comando: str) -> List[str]:
+    """
+    Desmembra wrappers como cmd /c "...", cmd /k "...", powershell -c "...", powershell -Command "...".
+    Retorna lista contendo o comando original e quaisquer comandos internos extraídos.
+    """
+    comandos = [comando]
+    padroes_wrapper = [
+        r"(?:cmd|cmd\.exe)\s+/[ck]\s+(.*)$",
+        r"(?:powershell|powershell\.exe|pwsh|pwsh\.exe)\s+-(?:c|command)\s+(.*)$",
+    ]
+    for p in padroes_wrapper:
+        m = re.search(p, comando.strip(), re.IGNORECASE)
+        if m:
+            interno = m.group(1).strip()
+            if (interno.startswith('"') and interno.endswith('"')) or (interno.startswith("'") and interno.endswith("'")):
+                interno = interno[1:-1].strip()
+            if interno and interno not in comandos:
+                comandos.append(interno)
+    return comandos
+
+
 def comando_toca_protegido(comando: str) -> Optional[str]:
     """
     Função pura que analisa se o comando tenta ler ou escrever em caminhos protegidos.
@@ -133,64 +154,78 @@ def comando_toca_protegido(comando: str) -> Optional[str]:
     - LEITURA: type, cat, more, findstr, head, tail, Get-Content, gc, git show HEAD:.env, git diff .env
     - ESCRITA: copy, move, xcopy, robocopy, mklink, attrib, icacls
     - Redirecionamento de entrada: < arquivo_protegido
+    - Normalização de wrappers (cmd /c, powershell -c, etc.) e detecção direta de .env e .git
     Retorna a identificação da infração ou None caso o comando seja seguro.
     """
     # Checagem de redirecionamento de entrada (< arquivo)
     for m in re.finditer(r"(?:^|[^<])<\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s>&|;]+))", comando):
         src = m.group(1) or m.group(2) or m.group(3)
-        if src and caminho_protegido(src.strip(), modo="leitura"):
+        if src and caminho_protegido(src.strip().strip("\"'"), modo="leitura"):
             return f"redirecionamento_origem_protegida: {src.strip()}"
 
-    subcomandos = re.split(r"&&|\|\||[&|;]", comando)
-    for sub in subcomandos:
-        sub = sub.strip()
-        if not sub:
-            continue
-        raw_tokens = re.findall(r'"([^"]+)"|\'([^\']+)\'|(\S+)', sub)
-        tokens = [t[0] or t[1] or t[2] for t in raw_tokens]
-        if not tokens:
-            continue
+    todos_comandos = _desmembrar_wrappers(comando)
 
-        # Ignora wrappers comuns como cmd /c ou powershell -c
-        idx = 0
-        if tokens[idx].lower() in ("cmd", "cmd.exe") and len(tokens) > idx + 2:
-            if tokens[idx + 1].lower() in ("/c", "/k"):
-                idx += 2
-        elif tokens[idx].lower() in ("powershell", "powershell.exe", "pwsh", "pwsh.exe") and len(tokens) > idx + 2:
-            if tokens[idx + 1].lower() in ("-c", "-command"):
-                idx += 2
+    # Varredura direta por ocorrências de nomes protegidos (.env e .git)
+    for cmd_str in todos_comandos:
+        if re.search(r"\.env(?:\b|\.|[\"' /\\:])", cmd_str, re.IGNORECASE):
+            return "comando_toca_protegido: .env"
+        if re.search(r"\.git(?:\b|/|\\)", cmd_str, re.IGNORECASE):
+            return "comando_toca_protegido: .git"
 
-        if idx >= len(tokens):
-            continue
+    for cmd_str in todos_comandos:
+        subcomandos = re.split(r"&&|\|\||[&|;]", cmd_str)
+        for sub in subcomandos:
+            sub = sub.strip()
+            if not sub:
+                continue
+            raw_tokens = re.findall(r'"([^"]+)"|\'([^\']+)\'|(\S+)', sub)
+            tokens = [t[0] or t[1] or t[2] for t in raw_tokens if any(t)]
+            if not tokens:
+                continue
 
-        cmd_nome = tokens[idx].lower()
-        args = tokens[idx + 1:]
+            # Remove aspas externas de todos os tokens
+            tokens = [t.strip("\"'") for t in tokens]
 
-        # Git show / git diff
-        if cmd_nome == "git" and args:
-            sub_git = args[0].lower()
-            if sub_git in ("show", "diff"):
-                for a in args[1:]:
-                    if a.startswith("-") and not (":" in a and not a.startswith("--")):
+            # Ignora wrappers comuns como cmd /c ou powershell -c
+            idx = 0
+            if tokens[idx].lower() in ("cmd", "cmd.exe") and len(tokens) > idx + 2:
+                if tokens[idx + 1].lower() in ("/c", "/k"):
+                    idx += 2
+            elif tokens[idx].lower() in ("powershell", "powershell.exe", "pwsh", "pwsh.exe") and len(tokens) > idx + 2:
+                if tokens[idx + 1].lower() in ("-c", "-command"):
+                    idx += 2
+
+            if idx >= len(tokens):
+                continue
+
+            cmd_nome = tokens[idx].lower()
+            args = tokens[idx + 1:]
+
+            # Git show / git diff
+            if cmd_nome == "git" and args:
+                sub_git = args[0].lower()
+                if sub_git in ("show", "diff"):
+                    for a in args[1:]:
+                        if a.startswith("-") and not (":" in a and not a.startswith("--")):
+                            continue
+                        if caminho_protegido(a, modo="leitura"):
+                            return f"comando_toca_protegido: git {sub_git} {a}"
+
+            # Comandos de leitura
+            elif cmd_nome in LEITURA_COMANDOS:
+                for a in args:
+                    if a.startswith("/") or (a.startswith("-") and len(a) > 1 and not a.startswith("--")):
                         continue
                     if caminho_protegido(a, modo="leitura"):
-                        return f"comando_toca_protegido: git {sub_git} {a}"
+                        return f"comando_toca_protegido: {cmd_nome} {a}"
 
-        # Comandos de leitura
-        elif cmd_nome in LEITURA_COMANDOS:
-            for a in args:
-                if a.startswith("/") or (a.startswith("-") and len(a) > 1 and not a.startswith("--")):
-                    continue
-                if caminho_protegido(a, modo="leitura"):
-                    return f"comando_toca_protegido: {cmd_nome} {a}"
-
-        # Comandos de escrita
-        elif cmd_nome in ESCRITA_COMANDOS:
-            for a in args:
-                if a.startswith("/") or a.startswith("-"):
-                    continue
-                if caminho_protegido(a, modo="escrita") or caminho_protegido(a, modo="leitura"):
-                    return f"comando_toca_protegido: {cmd_nome} {a}"
+            # Comandos de escrita
+            elif cmd_nome in ESCRITA_COMANDOS:
+                for a in args:
+                    if a.startswith("/") or a.startswith("-"):
+                        continue
+                    if caminho_protegido(a, modo="escrita") or caminho_protegido(a, modo="leitura"):
+                        return f"comando_toca_protegido: {cmd_nome} {a}"
 
     return None
 
@@ -198,22 +233,24 @@ def comando_toca_protegido(comando: str) -> Optional[str]:
 def comando_bloqueado(comando: str) -> Optional[str]:
     """
     Função pura que avalia se o comando contém padrões destrutivos de sistema no cmd.exe
-    ou tenta ler/escrever em arquivos ou destinos protegidos.
+    ou tenta ler/escrever em arquivos ou destinos protegidos, inclusive dentro de wrappers.
     Retorna a string do padrão que casou ou None caso seja permitido.
     """
-    cmd_lower = comando.strip().lower()
-    for padrao in PADROES_BLOQUEADOS:
-        if re.search(padrao, cmd_lower):
-            return padrao
+    todos_comandos = _desmembrar_wrappers(comando)
+    for cmd in todos_comandos:
+        cmd_lower = cmd.strip().lower()
+        for padrao in PADROES_BLOQUEADOS:
+            if re.search(padrao, cmd_lower):
+                return padrao
 
-    destinos = _destinos_redirecionamento(comando)
-    for dest in destinos:
-        if _destino_redirecionamento_e_protegido(dest):
-            return r"redirecionamento_destino_protegido"
+        destinos = _destinos_redirecionamento(cmd)
+        for dest in destinos:
+            if _destino_redirecionamento_e_protegido(dest.strip("\"'")):
+                return r"redirecionamento_destino_protegido"
 
-    toca_prot = comando_toca_protegido(comando)
-    if toca_prot:
-        return toca_prot
+        toca_prot = comando_toca_protegido(cmd)
+        if toca_prot:
+            return toca_prot
 
     return None
 
