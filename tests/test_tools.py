@@ -1242,3 +1242,61 @@ def test_readme_contagem_testes_sincronizada():
     saida_count = int(m_saida.group(1))
     assert saida_count == total_testes, f"Saída no README cita {saida_count}, mas suíte tem {total_testes} testes"
 
+
+def test_envrc_protegido_e_templates(tmp_path):
+    (tmp_path / ".envrc").write_text("export SECRET=123\n", encoding="utf-8")
+    (tmp_path / ".envrc.example").write_text("export SECRET=example\n", encoding="utf-8")
+
+    # .envrc protegido em caminho_protegido
+    assert caminho_protegido(".envrc") is True
+    assert caminho_protegido(".envrc.local") is True
+    assert caminho_protegido(".envrc.example") is False
+    assert caminho_protegido(".envrc.sample") is False
+    assert caminho_protegido(".envrc.template") is False
+
+    # type .envrc bloqueado
+    res_envrc = executar_comando("type .envrc", base_dir=tmp_path)
+    assert res_envrc["codigo_saida"] in (-1, 1)
+
+    # type .envrc.example permitido
+    res_example = executar_comando("type .envrc.example", base_dir=tmp_path)
+    assert res_example["codigo_saida"] == 0
+    assert "SECRET=example" in res_example["stdout"]
+
+
+def test_git_show_hifen_isolado_bloqueado(tmp_path):
+    import subprocess
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True)
+
+    (tmp_path / "app.py").write_text("print('hello')", encoding="utf-8")
+    subprocess.run(["git", "add", "app.py"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), capture_output=True)
+
+    # git show HEAD -- isolado NÃO deve ser tratado como arquivo específico
+    res_show_dash = executar_comando("git show HEAD --", base_dir=tmp_path)
+    assert res_show_dash["codigo_saida"] == -1
+    assert "requer flags de resumo" in res_show_dash["stderr"]
+
+    # git show HEAD --stat -- permitido
+    res_show_dash_stat = executar_comando("git show HEAD --stat --", base_dir=tmp_path)
+    assert res_show_dash_stat["codigo_saida"] == 0
+
+
+def test_type_multi_arquivo_formato_cmd(tmp_path):
+    (tmp_path / "f1.txt").write_text("conteudo 1", encoding="utf-8")
+    (tmp_path / "f2.txt").write_text("conteudo 2", encoding="utf-8")
+
+    # Arquivo único: sem cabeçalho extra
+    res_single = executar_comando("type f1.txt", base_dir=tmp_path)
+    assert res_single["codigo_saida"] == 0
+    assert res_single["stdout"] == "conteudo 1"
+
+    # Múltiplos arquivos: formato cmd.exe (\n<nome>\n\n<conteudo>)
+    res_multi = executar_comando("type f1.txt f2.txt", base_dir=tmp_path)
+    assert res_multi["codigo_saida"] == 0
+    esperado = "\nf1.txt\n\nconteudo 1\nf2.txt\n\nconteudo 2"
+    assert res_multi["stdout"] == esperado
+
+

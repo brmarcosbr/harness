@@ -88,10 +88,14 @@ def caminho_protegido(caminho: Union[str, Path], modo: str = "leitura") -> bool:
     # Checa bloqueio total (leitura e escrita)
     for bp in bloqueio_total:
         for p in partes:
-            if bp == ".env":
+            if bp in (".env", ".envrc"):
                 if p.endswith((".example", ".sample", ".template")):
                     continue
-                if p == ".env" or p.startswith(".env.") or p.startswith(".env_"):
+                if (
+                    p == bp
+                    or p.startswith(f"{bp}.")
+                    or p.startswith(f"{bp}_")
+                ):
                     return True
             elif bp == ".git":
                 if p == ".git":
@@ -845,7 +849,11 @@ def executar_comando(comando: str, base_dir: Optional[Path] = None) -> Dict[str,
                         ),
                         "codigo_saida": 1
                     }
-                conteudos.append(alvo.read_text(encoding="utf-8", errors="replace"))
+                texto_lido = alvo.read_text(encoding="utf-8", errors="replace")
+                if len(args[1:]) > 1:
+                    conteudos.append(f"\n{arq}\n\n{texto_lido}")
+                else:
+                    conteudos.append(texto_lido)
             except Exception as e:
                 return {
                     "stdout": "",

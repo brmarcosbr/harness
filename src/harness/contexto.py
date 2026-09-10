@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 from harness.config import DIRS_IGNORADOS, MAX_TURNOS_MANTER_PODA
@@ -202,7 +203,10 @@ def podar_historico(
     # Se só existem mensagens user, não há turnos de ação para podar
     if idx_primeiro_turno_acao == len(blocos):
         if tokens_total > teto_tokens:
-            print(f"[AVISO] contexto head+tail excede o teto de {teto_tokens} tokens ({tokens_total}) — reduza o contexto_projeto")
+            print(
+                f"[AVISO] contexto head+tail excede o teto de {teto_tokens} tokens ({tokens_total}) — reduza o contexto_projeto",
+                file=sys.stderr
+            )
         return list(mensagens)
 
     head_blocos = blocos[:idx_primeiro_turno_acao]
@@ -212,7 +216,10 @@ def podar_historico(
     # não é seguro podar o tail recente
     if len(turnos_acao) <= max_turnos_manter:
         if tokens_total > teto_tokens:
-            print(f"[AVISO] contexto head+tail excede o teto de {teto_tokens} tokens ({tokens_total}) — reduza o contexto_projeto")
+            print(
+                f"[AVISO] contexto head+tail excede o teto de {teto_tokens} tokens ({tokens_total}) — reduza o contexto_projeto",
+                file=sys.stderr
+            )
         return list(mensagens)
 
     # Candidatos a poda: turnos entre o head e os últimos max_turnos_manter
@@ -240,7 +247,10 @@ def podar_historico(
 
     tokens_finais = estimar_tokens_historico(resultado_final)
     if tokens_finais > teto_tokens:
-        print(f"[AVISO] contexto head+tail excede o teto de {teto_tokens} tokens ({tokens_finais}) — reduza o contexto_projeto")
+        print(
+            f"[AVISO] contexto head+tail excede o teto de {teto_tokens} tokens ({tokens_finais}) — reduza o contexto_projeto",
+            file=sys.stderr
+        )
 
     return resultado_final
 

@@ -68,7 +68,7 @@ DIRS_IGNORADOS = {".venv", "__pycache__", ".git", ".pytest_cache", "build", "dis
 
 # Caminhos protegidos contra leitura e/ou escrita pelas ferramentas
 CAMINHOS_PROTEGIDOS = {
-    "bloqueio_total": [".env", ".git"],
+    "bloqueio_total": [".env", ".envrc", ".git"],
     "somente_escrita": [".github"],
 }
 

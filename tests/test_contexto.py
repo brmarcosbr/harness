@@ -473,8 +473,8 @@ def test_podar_historico_aviso_quando_head_e_tail_excedem_teto(capsys):
     resultado = podar_historico(mensagens, teto_tokens=50, max_turnos_manter=2)
     captured = capsys.readouterr()
 
-    assert "[AVISO] contexto head+tail excede o teto de 50 tokens" in captured.out
-    assert "reduza o contexto_projeto" in captured.out
+    assert "[AVISO] contexto head+tail excede o teto de 50 tokens" in captured.err
+    assert "reduza o contexto_projeto" in captured.err
     assert len(resultado) == 2
 
 
