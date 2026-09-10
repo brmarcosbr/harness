@@ -879,6 +879,73 @@ def test_dir_nativo_sobre_arquivo_individual(tmp_path):
     assert res_bare["stdout"].strip() == "exemplo.txt"
 
 
+def test_git_exfiltracao_conteudo_bloqueado(tmp_path):
+    import subprocess
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True)
+
+    (tmp_path / "README.md").write_text("documentacao inicial", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), capture_output=True)
+
+    # Commita um arquivo protegido (.env) com chave secreta
+    chave_secreta = "SEGREDO_SUPER_CONFIDENCIAL_12345"
+    (tmp_path / ".env").write_text(f"API_KEY={chave_secreta}\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".env"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add secret"], cwd=str(tmp_path), capture_output=True)
+
+    # 1. git log -p -1 deve ser bloqueado por flag de patch e nao vazar segredo
+    res_log_p = executar_comando("git log -p -1", base_dir=tmp_path)
+    assert res_log_p["codigo_saida"] == -1
+    assert chave_secreta not in res_log_p["stdout"]
+
+    # 2. git show HEAD sem resumo ou arquivo especifico deve ser bloqueado e nao vazar segredo
+    res_show_head = executar_comando("git show HEAD", base_dir=tmp_path)
+    assert res_show_head["codigo_saida"] == -1
+    assert chave_secreta not in res_show_head["stdout"]
+
+    # 3. git show --stat HEAD deve ser permitido e nao exibir conteudo do segredo
+    res_show_stat = executar_comando("git show --stat HEAD", base_dir=tmp_path)
+    assert res_show_stat["codigo_saida"] == 0
+    assert chave_secreta not in res_show_stat["stdout"]
+
+    # 4. git log --oneline -3 deve ser permitido e nao vazar segredo
+    res_log_oneline = executar_comando("git log --oneline -3", base_dir=tmp_path)
+    assert res_log_oneline["codigo_saida"] == 0
+    assert chave_secreta not in res_log_oneline["stdout"]
+
+    # 5. git status deve ser permitido
+    res_status = executar_comando("git status", base_dir=tmp_path)
+    assert res_status["codigo_saida"] == 0
+
+
+def test_filtrar_saida_git_redige_diff_protegido():
+    from harness.tools import _filtrar_saida_git
+
+    diff_vazamento = (
+        "diff --git a/README.md b/README.md\n"
+        "index 111..222 100644\n"
+        "--- a/README.md\n"
+        "+++ b/README.md\n"
+        "@@ -1 +1 @@\n"
+        "+novo readme\n"
+        "diff --git a/.env b/.env\n"
+        "new file mode 100644\n"
+        "index 000..333\n"
+        "--- /dev/null\n"
+        "+++ b/.env\n"
+        "@@ -0,0 +1 @@\n"
+        "+SECRET_KEY=super_secreta_999\n"
+    )
+
+    saida_filtrada = _filtrar_saida_git(diff_vazamento)
+    assert "+novo readme" in saida_filtrada
+    assert "SECRET_KEY=super_secreta_999" not in saida_filtrada
+    assert "[conteúdo de arquivo protegido omitido pela política de segurança]" in saida_filtrada
+
+
+
 
 
 

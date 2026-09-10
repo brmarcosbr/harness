@@ -493,6 +493,7 @@ def validar_comando_whitelist(
             "--work-tree", "--git-dir", "--namespace", "--config-env",
             "--upload-pack", "--receive-pack",
         )
+        flags_patch = ("-p", "-u", "--patch", "--textconv")
 
         for a in args[2:]:
             a_lower = a.lower()
@@ -507,6 +508,12 @@ def validar_comando_whitelist(
             ):
                 return f"Flag perigosa não permitida no git: '{a}'."
 
+            if (
+                a_lower in flags_patch
+                or any(a_lower.startswith(f"{f}=") or a_lower == f for f in flags_patch)
+            ):
+                return f"Flag de exibição de conteúdo/patch não permitida no git: '{a}'."
+
             if a_lower.startswith("--output") or a_lower.startswith("-o=") or a_lower == "-o":
                 return f"Redirecionamento de saída via flag git bloqueado: '{a}'."
 
@@ -516,6 +523,24 @@ def validar_comando_whitelist(
             partes = a.replace("\\", "/").split("/")
             if ".." in partes:
                 return f"Caminho não pode conter '..' (fora do projeto): '{a}'."
+
+        if subcmd == "show":
+            flags_resumo = {"--stat", "--name-only", "--name-status", "--no-patch", "-s"}
+            tem_resumo = any(
+                a.lower() in flags_resumo or any(a.lower().startswith(f"{f}=") for f in flags_resumo)
+                for a in args[2:]
+            )
+            tem_caminho_especifico = any(
+                (":" in a and not a.startswith("-")) or a == "--"
+                for a in args[2:]
+            )
+            if not tem_resumo and not tem_caminho_especifico:
+                return (
+                    f"Comando 'git show' sem arquivo específico requer flags de resumo "
+                    f"(--stat, --name-only, --name-status, --no-patch, -s): 'git show {' '.join(args[2:])}'."
+                )
+
+        for a in args[2:]:
 
             # Se for revisão com caminho (ex: HEAD:.env ou commit:caminho)
             if ":" in a and not a.startswith("-"):
@@ -583,7 +608,28 @@ def validar_comando_whitelist(
         # echo é permitido sem validação de caminhos (sem shell, metacaracteres não redirecionam)
         pass
 
-    return None
+def _filtrar_saida_git(stdout: str) -> str:
+    """
+    Filtra blocos de saída de diff do git que contenham arquivos protegidos (ex.: .env commitado).
+    Redige o conteúdo sensível para evitar exfiltração.
+    """
+    if not stdout or "diff --git" not in stdout:
+        return stdout
+
+    blocos = re.split(r"(?=^diff --git )", stdout, flags=re.MULTILINE)
+    resultado = []
+    for bloco in blocos:
+        m = re.match(r"^diff --git a/(\S+)\s+b/(\S+)", bloco)
+        if m:
+            caminho_a, caminho_b = m.group(1), m.group(2)
+            if caminho_protegido(caminho_a, modo="leitura") or caminho_protegido(caminho_b, modo="leitura"):
+                resultado.append(
+                    f"diff --git a/{caminho_a} b/{caminho_b}\n"
+                    f"[conteúdo de arquivo protegido omitido pela política de segurança]\n"
+                )
+                continue
+        resultado.append(bloco)
+    return "".join(resultado)
 
 
 def executar_comando(comando: str, base_dir: Optional[Path] = None) -> Dict[str, Any]:
@@ -806,8 +852,12 @@ def executar_comando(comando: str, base_dir: Optional[Path] = None) -> Dict[str,
             errors="replace",
             env=obter_env_saneado()
         )
+        stdout_final = resultado.stdout
+        if executavel == "git":
+            stdout_final = _filtrar_saida_git(stdout_final)
+
         return {
-            "stdout": resultado.stdout,
+            "stdout": stdout_final,
             "stderr": resultado.stderr,
             "codigo_saida": resultado.returncode
         }
