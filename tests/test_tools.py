@@ -379,4 +379,36 @@ def test_comando_bloqueado_powershell_destrutivo():
         assert comando_bloqueado(cmd) is None, f"Deveria ter permitido comando seguro: {cmd}"
 
 
+def test_buscar_no_projeto_protecao_redos(tmp_path):
+    # 1. Padrões com quantificadores aninhados devem ser rejeitados imediatamente
+    res_redos1 = buscar_no_projeto("(a+)+$", base_dir=tmp_path)
+    assert res_redos1["sucesso"] is False
+    assert "quantificador aninhado" in res_redos1["erro"]
+
+    res_redos2 = buscar_no_projeto("([a-z]+)+", base_dir=tmp_path)
+    assert res_redos2["sucesso"] is False
+    assert "quantificador aninhado" in res_redos2["erro"]
+
+    # 2. Padrões regex legítimos funcionam normalmente
+    (tmp_path / "app.py").write_text("def calcular_valor(x):\n    return x * 2\n", encoding="utf-8")
+    res_ok = buscar_no_projeto(r"def\s+\w+", base_dir=tmp_path)
+    assert res_ok["sucesso"] is True
+    assert res_ok["total"] == 1
+    assert "def calcular_valor(x):" in res_ok["resultados"][0]
+
+    # 3. Truncamento de linha para 500 chars antes do regex.search
+    linha_com_alvo_depois_de_500 = ("a" * 520) + "TARGET_EXTREMO"
+    linha_com_alvo_dentro_de_500 = ("b" * 100) + "TARGET_INICIAL"
+    (tmp_path / "longo.txt").write_text(f"{linha_com_alvo_depois_de_500}\n{linha_com_alvo_dentro_de_500}\n", encoding="utf-8")
+
+    res_pos = buscar_no_projeto("TARGET_EXTREMO", base_dir=tmp_path)
+    assert res_pos["sucesso"] is True
+    assert res_pos["total"] == 0  # não encontra além de 500 chars
+
+    res_dentro = buscar_no_projeto("TARGET_INICIAL", base_dir=tmp_path)
+    assert res_dentro["sucesso"] is True
+    assert res_dentro["total"] == 1
+
+
+
 

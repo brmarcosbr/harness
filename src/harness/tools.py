@@ -354,6 +354,11 @@ def escrever_arquivo(caminho: str, conteudo: str, base_dir: Optional[Path] = Non
         return {"sucesso": False, "erro": f"Falha ao escrever arquivo '{caminho}': {e}", "bytes_escritos": 0}
 
 
+def _padrao_tem_quantificador_aninhado(padrao: str) -> bool:
+    """Detecta padrões regex com quantificadores aninhados suscetíveis a ReDoS."""
+    return bool(re.search(r"\([^)]*[\+\*\{][^)]*\)[\+\*\{]", padrao))
+
+
 def buscar_no_projeto(
     padrao: str,
     extensao: Optional[str] = None,
@@ -362,7 +367,15 @@ def buscar_no_projeto(
     """
     Varre arquivos texto do projeto buscando padrão regex (máx 50 resultados).
     Ignora diretórios especiais (.git, .venv, etc.) e arquivos > 1 MB ou binários.
+    Protegido contra ReDoS e caminhos restritos.
     """
+    if _padrao_tem_quantificador_aninhado(padrao):
+        return {
+            "sucesso": False,
+            "erro": "padrão potencialmente catastrófico (quantificador aninhado)",
+            "resultados": []
+        }
+
     raiz = (base_dir or Path.cwd()).resolve()
 
     try:
@@ -403,7 +416,8 @@ def buscar_no_projeto(
 
                 with open(p, "r", encoding="utf-8", errors="replace") as f_text:
                     for num_linha, linha in enumerate(f_text, start=1):
-                        if regex.search(linha):
+                        linha_busca = linha[:500]
+                        if regex.search(linha_busca):
                             linha_limpa = linha.strip()
                             resultados.append(f"{caminho_rel}:{num_linha}:{linha_limpa}")
                             if len(resultados) >= MAX_BUSCA_RESULTADOS:

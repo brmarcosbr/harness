@@ -1,9 +1,9 @@
 # Agent Harness — Agente de Código com Context Caching Medido
 
-> Loop multi-turno agnóstico de provider, tool use segura e **76,2% de economia de custo via context caching** (benchmark real com Gemini).
+> Loop multi-turno agnóstico de provider, tool use segura e **74,6% a 76,2% de economia de custo via context caching** (benchmark real com Gemini).
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-68%2F68%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-73%2F73%20passing-brightgreen)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 ![Zero Libs](https://img.shields.io/badge/external--deps-zero-informational)
 ![CI](https://github.com/brmarcosbr/harness/actions/workflows/ci.yml/badge.svg)
@@ -34,7 +34,7 @@ O **Agent Harness** é uma implementação em Python puro (sem frameworks pesado
 
 - **Zero Dependências Externas em Produção:** Usa estritamente a biblioteca padrão do Python (`urllib`, `json`, `dataclasses`, `subprocess`, `argparse`). O `pytest` é a única dependência de desenvolvimento.
 - **Multi-Provider Neutro:** Protocolo unificado de mensagens e ferramentas, adaptado dinamicamente para o schema nativo do Gemini (incluindo Gemini 3+) ou para o padrão OpenAI / DeepSeek.
-- **Context Caching Mensurado:** Prefixos determinísticos estáveis (*prefix invariance*) permitem que a API Gemini reutilize tokens cacheados a partir do 2º turno, reduzindo custos em mais de 75%.
+- **Context Caching Mensurado:** Prefixos determinísticos estáveis (*prefix invariance*) permitem que a API Gemini reutilize tokens cacheados a partir do 2º turno, reduzindo custos em mais de 74% (até 76,2% contrafactual).
 - **Poda Ativa de Contexto:** Algoritmo *head-body-tail* que mantém o prefixo cacheável intacto no topo (*head*), descarta turnos intermediários quando o orçamento de tokens estoura (*body*) e preserva os turnos mais recentes (*tail*).
 - **Tools Seguras com Blocklist e Proteção de Caminho:** Comandos de terminal, leitura, escrita e busca de arquivos contam com restrições rígidas contra comandos destrutivos e *path traversal*.
 
@@ -155,7 +155,7 @@ Resultados medidos no modelo `gemini-3.8-flash` com o contexto do repositório (
 | *(criar bench_math.py + bench_test_math.py e rodar)* | OFF | 5 | 176.743 | 0 | $0.133562 | 0,0% | SIM |
 | **T3: Spec + Teste Próprio** | ON | 6 | 211.947 | 196.185 | $0.027912 | 82,6% | SIM |
 | *(criar bench_contador.py + bench_test_contador.py e rodar)* | OFF | 6 | 212.945 | 0 | $0.161520 | 0,0% | SIM |
-| **TOTAL CACHE ON** | **ON** | **16** | **572.784** | **490.499** | **$0.103586** | **76,2%** | **3/3** |
+| **TOTAL CACHE ON** | **ON** | **16** | **572.784** | **490.499** | **$0.103586** | **76,2%*** | **3/3** |
 | **TOTAL CACHE OFF** | **OFF** | **15** | **536.506** | **0** | **$0.407592** | **0,0%** | **3/3** |
 
 ### Metodologia e Transparência
@@ -165,7 +165,9 @@ Resultados medidos no modelo `gemini-3.8-flash` com o contexto do repositório (
   - **T2 (geracao-com-teste):** Criar `bench_math.py` com função `soma(a, b)` e `bench_test_math.py` com validação de saída não-zero em caso de erro, e executar `python bench_test_math.py`.
   - **T3 (spec-de-arquivo):** Criar `bench_contador.py` com função `contar_palavras(t)` e `bench_test_contador.py` com casos de teste específicos, e executar `python bench_test_contador.py`.
 - O modelo decide autonomamente a quantidade de turnos para cada tarefa (por exemplo, na T1 o modelo utilizou 5 turnos com cache e 4 turnos sem cache, explorando arquivos de forma independente).
-- Mesmo com variação autônoma de turnos, o custo total foi reduzido de **$0.407592** para **$0.103586**, representando uma **economia real de 76,2%** com todas as 3 tarefas concluídas com sucesso.
+- **As Duas Bases de Cálculo de Economia (Transparência Total):**
+  1. **74,6% — Comparação Direta entre Execuções Distintas:** O custo real da suíte completa com Cache OFF foi de **$0.407592** (15 turnos), enquanto com Cache ON foi de **$0.103586** (16 turnos). A razão direta `($0.407592 - $0.103586) / $0.407592` resulta em **74,6% de economia real**, mesmo com o agente executando 1 turno a mais na rodada com cache.
+  2. **76,2% — Economia Contrafactual Turno a Turno (*):** O valor reportado na tabela de benchmark (`$0.331087 / 76,2%`) é a soma contrafactual calculada pelo harness sobre a exata execução com Cache ON: o que aqueles 16 turnos específicos teriam custado caso nenhum token tivesse sido servido pelo cache ($0.434673 contrafactual) versus o que de fato custaram com o desconto de cache ($0.103586 real).
 - O cache só passa a atuar a partir do 2º turno de cada tarefa, quando o prefixo inicial da conversa já foi ingerido e reconhecido pelo provedor.
 
 ---
