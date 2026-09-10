@@ -3,7 +3,7 @@
 > Loop multi-turno agnóstico de provider, tool use segura e **74,6% a 76,2% de economia de custo via context caching** (benchmark real com Gemini).
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-73%2F73%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-79%2F79%20passing-brightgreen)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 ![Zero Libs](https://img.shields.io/badge/external--deps-zero-informational)
 ![CI](https://github.com/brmarcosbr/harness/actions/workflows/ci.yml/badge.svg)

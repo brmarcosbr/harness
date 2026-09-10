@@ -237,3 +237,92 @@ def test_imprimir_tabela_com_economia_negativa(capsys):
     tabela = imprimir_tabela(dados_mock)
     assert "-$0.000200 (-20.0%) (REGRESSAO)" in tabela
 
+
+def test_validar_t2_e_t3_exige_assert_e_stdout_nao_vazio(tmp_path):
+    # --- T2: geracao-com-teste ---
+    arquivo_math = tmp_path / "bench_test_math.py"
+
+    # 1. Sem assert no arquivo
+    arquivo_math.write_text("print('resultado: 5')\n", encoding="utf-8")
+    hist_t2_ok_cmd = [
+        {
+            "role": "model",
+            "tool_calls": [{"id": "c1", "name": "executar_comando", "args": {"comando": "python bench_test_math.py"}}],
+        },
+        {
+            "role": "tool",
+            "name": "executar_comando",
+            "tool_call_id": "c1",
+            "resultado": {"codigo_saida": 0, "stdout": "resultado: 5", "stderr": ""},
+        },
+    ]
+    valido, detalhe = validar("geracao-com-teste", hist_t2_ok_cmd, tmp_path)
+    assert valido is False
+    assert "não contém asserção ('assert')" in detalhe
+
+    # 2. Com assert mas stdout vazio
+    arquivo_math.write_text("assert 2 + 3 == 5\n", encoding="utf-8")
+    hist_t2_empty_stdout = [
+        {
+            "role": "model",
+            "tool_calls": [{"id": "c1", "name": "executar_comando", "args": {"comando": "python bench_test_math.py"}}],
+        },
+        {
+            "role": "tool",
+            "name": "executar_comando",
+            "tool_call_id": "c1",
+            "resultado": {"codigo_saida": 0, "stdout": "   ", "stderr": ""},
+        },
+    ]
+    valido, detalhe = validar("geracao-com-teste", hist_t2_empty_stdout, tmp_path)
+    assert valido is False
+    assert "stdout não-vazio" in detalhe
+
+    # 3. Com assert e stdout preenchido -> Sucesso
+    valido, detalhe = validar("geracao-com-teste", hist_t2_ok_cmd, tmp_path)
+    assert valido is True
+    assert "stdout não-vazio" in detalhe
+
+    # --- T3: spec-de-arquivo ---
+    arquivo_contador = tmp_path / "bench_test_contador.py"
+
+    # 1. Sem assert no arquivo
+    arquivo_contador.write_text("print('testes ok')\n", encoding="utf-8")
+    hist_t3_ok_cmd = [
+        {
+            "role": "model",
+            "tool_calls": [{"id": "c2", "name": "executar_comando", "args": {"comando": "python bench_test_contador.py"}}],
+        },
+        {
+            "role": "tool",
+            "name": "executar_comando",
+            "tool_call_id": "c2",
+            "resultado": {"codigo_saida": 0, "stdout": "testes ok", "stderr": ""},
+        },
+    ]
+    valido, detalhe = validar("spec-de-arquivo", hist_t3_ok_cmd, tmp_path)
+    assert valido is False
+    assert "não contém asserção ('assert')" in detalhe
+
+    # 2. Com assert e stdout preenchido -> Sucesso
+    arquivo_contador.write_text("assert True\nprint('testes ok')\n", encoding="utf-8")
+    valido, detalhe = validar("spec-de-arquivo", hist_t3_ok_cmd, tmp_path)
+    assert valido is True
+    assert "stdout não-vazio" in detalhe
+
+
+def test_rodar_benchmark_respeita_base_dir_e_restaura_cwd(tmp_path):
+    cwd_inicial = Path.cwd().resolve()
+
+    def fake_factory():
+        return FakeBenchProvider([
+            ProviderResponse(text="Final", tool_calls=[], usage={"prompt": 50, "completion": 10, "total": 60, "cached": 0}, modelo="mock")
+        ])
+
+    resultados = rodar_benchmark(fake_factory, max_turns=1, base_dir=tmp_path)
+    cwd_final = Path.cwd().resolve()
+
+    assert cwd_inicial == cwd_final
+    assert len(resultados) == 6  # 3 tarefas x 2 regimes (ON, OFF)
+
+

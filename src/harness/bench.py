@@ -1,5 +1,6 @@
 """Módulo de benchmark do Agent Harness — avaliação comparativa de cache ON/OFF."""
 
+import os
 from pathlib import Path
 import re
 import time
@@ -102,24 +103,68 @@ def validar(
         )
 
     elif tarefa_nome == "geracao-com-teste":
+        caminho_teste = base / "bench_test_math.py"
+        conteudo_teste = ""
+        if caminho_teste.is_file():
+            try:
+                conteudo_teste = caminho_teste.read_text(encoding="utf-8", errors="replace")
+            except Exception as e:
+                return False, f"Falha ao ler bench_test_math.py: {e}"
+        else:
+            for m in historico:
+                if m.get("role") == "model":
+                    for tc in m.get("tool_calls", []):
+                        if tc.get("name") == "escrever_arquivo":
+                            args = tc.get("args", {})
+                            if isinstance(args, dict) and "bench_test_math.py" in args.get("caminho", ""):
+                                conteudo_teste = args.get("conteudo", "")
+
+        if conteudo_teste and "assert" not in conteudo_teste:
+            return False, "Arquivo bench_test_math.py não contém asserção ('assert')."
+
         for m in historico:
             if m.get("role") == "tool" and m.get("name") == "executar_comando":
                 resultado = m.get("resultado", {})
                 if isinstance(resultado, dict) and resultado.get("codigo_saida") == 0:
+                    stdout = str(resultado.get("stdout", "")).strip()
+                    if not stdout:
+                        continue
                     cmd = _comando_para_tool(historico, m)
                     if "bench_test_math.py" in cmd:
-                        return True, "bench_test_math.py executado com código de saída 0."
-        return False, "Nenhuma execução de bench_test_math.py com código de saída 0 encontrada."
+                        return True, "bench_test_math.py executado com código de saída 0 e stdout não-vazio."
+        return False, "Nenhuma execução válida de bench_test_math.py com código de saída 0 e stdout não-vazio encontrada."
 
     elif tarefa_nome == "spec-de-arquivo":
+        caminho_teste = base / "bench_test_contador.py"
+        conteudo_teste = ""
+        if caminho_teste.is_file():
+            try:
+                conteudo_teste = caminho_teste.read_text(encoding="utf-8", errors="replace")
+            except Exception as e:
+                return False, f"Falha ao ler bench_test_contador.py: {e}"
+        else:
+            for m in historico:
+                if m.get("role") == "model":
+                    for tc in m.get("tool_calls", []):
+                        if tc.get("name") == "escrever_arquivo":
+                            args = tc.get("args", {})
+                            if isinstance(args, dict) and "bench_test_contador.py" in args.get("caminho", ""):
+                                conteudo_teste = args.get("conteudo", "")
+
+        if conteudo_teste and "assert" not in conteudo_teste:
+            return False, "Arquivo bench_test_contador.py não contém asserção ('assert')."
+
         for m in historico:
             if m.get("role") == "tool" and m.get("name") == "executar_comando":
                 resultado = m.get("resultado", {})
                 if isinstance(resultado, dict) and resultado.get("codigo_saida") == 0:
+                    stdout = str(resultado.get("stdout", "")).strip()
+                    if not stdout:
+                        continue
                     cmd = _comando_para_tool(historico, m)
                     if "bench_test_contador.py" in cmd:
-                        return True, "bench_test_contador.py executado com código de saída 0."
-        return False, "Nenhuma execução de bench_test_contador.py com código de saída 0 encontrada."
+                        return True, "bench_test_contador.py executado com código de saída 0 e stdout não-vazio."
+        return False, "Nenhuma execução válida de bench_test_contador.py com código de saída 0 e stdout não-vazio encontrada."
 
     return False, f"Tarefa desconhecida: '{tarefa_nome}'"
 
@@ -144,58 +189,67 @@ def rodar_benchmark(
     """
     Executa a suíte de 3 tarefas com cache ON e cache OFF, medindo latência, custos e taxa de sucesso.
     Limpa os artefatos de cada tarefa antes e depois da execução.
+    Se base_dir for fornecido, executa no diretório com garantia de restauração via try/finally.
     """
-    base = Path(base_dir) if base_dir else Path.cwd()
+    base = Path(base_dir).resolve() if base_dir else Path.cwd().resolve()
     contexto_repo = gerar_contexto_repo(base)
     resultados: List[Dict[str, Any]] = []
 
-    for tarefa in TAREFAS_BENCH:
-        t_id = tarefa["id"]
-        t_nome = tarefa["nome"]
-        instrucao = tarefa["instrucao"]
-        artefatos = tarefa["artefatos"]
+    cwd_original = Path.cwd()
+    if base_dir:
+        os.chdir(base)
 
-        for regime, cache_flag in [("ON", True), ("OFF", False)]:
-            # Limpeza preventiva
-            limpar_artefatos(base, artefatos)
+    try:
+        for tarefa in TAREFAS_BENCH:
+            t_id = tarefa["id"]
+            t_nome = tarefa["nome"]
+            instrucao = tarefa["instrucao"]
+            artefatos = tarefa["artefatos"]
 
-            print()
-            print("#" * 60)
-            print(f"BENCHMARK: {t_id} ({t_nome}) | Cache: {regime}")
-            print("#" * 60)
+            for regime, cache_flag in [("ON", True), ("OFF", False)]:
+                # Limpeza preventiva
+                limpar_artefatos(base, artefatos)
 
-            t0 = time.monotonic()
-            provider_instancia = provider_factory()
-            loop_res: LoopResult = executar_loop(
-                tarefa=instrucao,
-                provider=provider_instancia,
-                max_turns=max_turns,
-                contexto_projeto=contexto_repo,
-                cache_habilitado=cache_flag,
-            )
-            latencia = time.monotonic() - t0
+                print()
+                print("#" * 60)
+                print(f"BENCHMARK: {t_id} ({t_nome}) | Cache: {regime}")
+                print("#" * 60)
 
-            sucesso, detalhe = validar(t_nome, loop_res.historico, base)
-            limpar_artefatos(base, artefatos)
+                t0 = time.monotonic()
+                provider_instancia = provider_factory()
+                loop_res: LoopResult = executar_loop(
+                    tarefa=instrucao,
+                    provider=provider_instancia,
+                    max_turns=max_turns,
+                    contexto_projeto=contexto_repo,
+                    cache_habilitado=cache_flag,
+                )
+                latencia = time.monotonic() - t0
 
-            met = loop_res.metricas
-            resultados.append({
-                "tarefa_id": t_id,
-                "tarefa_nome": t_nome,
-                "cache": regime,
-                "cache_habilitado": cache_flag,
-                "turnos": met["turnos_usados"],
-                "prompt_tokens": met["prompt_tokens"],
-                "cached_tokens": met["cached_tokens"],
-                "completion_tokens": met["completion_tokens"],
-                "custo_real": met["custo_real"],
-                "custo_sem_cache": met["custo_sem_cache"],
-                "economia": met["economia"],
-                "economia_pct": met["economia_pct"],
-                "sucesso": sucesso,
-                "detalhe": detalhe,
-                "latencia": latencia,
-            })
+                sucesso, detalhe = validar(t_nome, loop_res.historico, base)
+                limpar_artefatos(base, artefatos)
+
+                met = loop_res.metricas
+                resultados.append({
+                    "tarefa_id": t_id,
+                    "tarefa_nome": t_nome,
+                    "cache": regime,
+                    "cache_habilitado": cache_flag,
+                    "turnos": met["turnos_usados"],
+                    "prompt_tokens": met["prompt_tokens"],
+                    "cached_tokens": met["cached_tokens"],
+                    "completion_tokens": met["completion_tokens"],
+                    "custo_real": met["custo_real"],
+                    "custo_sem_cache": met["custo_sem_cache"],
+                    "economia": met["economia"],
+                    "economia_pct": met["economia_pct"],
+                    "sucesso": sucesso,
+                    "detalhe": detalhe,
+                    "latencia": latencia,
+                })
+    finally:
+        if base_dir:
+            os.chdir(cwd_original)
 
     return resultados
 
