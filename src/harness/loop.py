@@ -1,10 +1,8 @@
 from dataclasses import dataclass
-import inspect
 import os
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from harness.config import (
-    COMMAND_TIMEOUT_SECONDS,
     MAX_TURNS,
     MAX_TURNOS_MANTER_PODA,
     SYSTEM_PROMPT,
@@ -74,6 +72,8 @@ def executar_loop(
     else:
         print("Cache de contexto: OFF (prefixo instavel - simulando harness ingenuo)")
     print(f"Diretório atual: {os.getcwd()}")
+    if os.name != "nt":
+        print("[AVISO] ambiente nao-Windows: a blocklist e o system prompt assumem cmd.exe; comandos Linux destrutivos NAO sao bloqueados")
     print("-" * 60)
 
     if contexto_projeto:
@@ -174,12 +174,17 @@ def executar_loop(
                             resultado_raw = tool_func(**func_args)
                         else:
                             resultado_raw = tool_func(func_args)
-                    except TypeError:
-                        # Fallback se a assinatura esperar comando posicional
-                        if "comando" in func_args and len(func_args) == 1:
-                            resultado_raw = tool_func(func_args["comando"])
+                    except TypeError as e:
+                        msg_err = str(e).lower()
+                        termos_assinatura = ("unexpected keyword", "missing", "required", "takes")
+                        if any(termo in msg_err for termo in termos_assinatura):
+                            # Fallback se a assinatura esperar comando posicional
+                            if "comando" in func_args and len(func_args) == 1:
+                                resultado_raw = tool_func(func_args["comando"])
+                            else:
+                                resultado_raw = {"sucesso": False, "erro": f"Argumentos inválidos para a função {func_name}: {func_args}"}
                         else:
-                            resultado_raw = {"sucesso": False, "erro": f"Argumentos inválidos para a função {func_name}: {func_args}"}
+                            raise HarnessError(f"Erro interno na execução da tool '{func_name}': {e}") from e
                     except Exception as e:
                         resultado_raw = {"sucesso": False, "erro": f"Erro na execução da tool '{func_name}': {e}"}
 

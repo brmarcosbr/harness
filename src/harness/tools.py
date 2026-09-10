@@ -309,8 +309,8 @@ TOOLS: List[Dict[str, Any]] = [
             },
             "required": ["comando"]
         },
+        # Nota: timeouts de execução são gerenciados internamente (ex.: executar_comando usa COMMAND_TIMEOUT_SECONDS)
         "handler": executar_comando,
-        "timeout": COMMAND_TIMEOUT_SECONDS
     },
     {
         "name": "ler_arquivo",
@@ -329,7 +329,6 @@ TOOLS: List[Dict[str, Any]] = [
             "required": ["caminho"]
         },
         "handler": ler_arquivo,
-        "timeout": 10
     },
     {
         "name": "escrever_arquivo",
@@ -352,7 +351,6 @@ TOOLS: List[Dict[str, Any]] = [
             "required": ["caminho", "conteudo"]
         },
         "handler": escrever_arquivo,
-        "timeout": 10
     },
     {
         "name": "buscar_no_projeto",
@@ -375,7 +373,6 @@ TOOLS: List[Dict[str, Any]] = [
             "required": ["padrao"]
         },
         "handler": buscar_no_projeto,
-        "timeout": 15
     }
 ]
 

@@ -3,7 +3,7 @@
 > Loop multi-turno agnóstico de provider, tool use segura e **76,2% de economia de custo via context caching** (benchmark real com Gemini).
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-58%2F58%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-68%2F68%20passing-brightgreen)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 ![Zero Libs](https://img.shields.io/badge/external--deps-zero-informational)
 ![CI](https://github.com/brmarcosbr/harness/actions/workflows/ci.yml/badge.svg)
@@ -114,7 +114,7 @@ O módulo de contexto divide a janela em 3 regiões:
 +-------------------------------------------------------------------+
 ```
 
-Quando a flag `--no-cache` é fornecida, um cabeçalho dinâmico contendo timestamp em microssegundos é propositadamente injetado no início da mensagem do usuário, quebrando a invariância do prefixo e forçando *cache miss* a cada turno para fins de comparação.
+Quando a flag `--no-cache` é fornecida, um cabeçalho dinâmico contendo timestamp (`time.time()`, segundos float) é propositadamente injetado no início da mensagem do usuário, quebrando a invariância do prefixo e forçando *cache miss* a cada turno para fins de comparação.
 
 ---
 
@@ -130,8 +130,10 @@ O harness disponibiliza 4 ferramentas nativas para o modelo:
 ### Medidas de Mitigação Implementadas
 
 - **Blocklist de Comandos Críticos:** Bloqueio via regex dos padrões perigosos mapeados em `PADROES_BLOQUEADOS`: `format`, `diskpart`, `shutdown`, `rd /s` (ou `/q`), `rmdir /s` (ou `/q`), `rm -rf`, `reg delete`, `del /s` (ou `/f` ou `/q`), `erase /s` (ou `/f` ou `/q`), `cipher /w` e `taskkill /f /im`.
+- **Caminhos Protegidos:** Bloqueio total de leitura e escrita para `.env` e `.git/`, e bloqueio de escrita para `.github/` (configurados em `CAMINHOS_PROTEGIDOS`).
 - **Proteção contra Path Traversal:** Validação estrita via `Path.resolve()` garantindo que nenhum caminho acesse pastas superiores à raiz do projeto (`..` proibido).
 - **Timeouts Rígidos:** Cada execução de comando possui limite padrão de 30 segundos, prevenindo bloqueios em processos interativos ou loops infinitos.
+- **Plataforma Alvo Oficial:** O harness foi projetado para ambiente Windows (shell `cmd.exe`). Em ambientes não-Windows (Linux/macOS), o harness emite um aviso no banner indicando que a blocklist e o system prompt assumem a sintaxe do `cmd.exe` e que comandos destrutivos específicos do POSIX/Linux não são cobertos.
 
 > [!WARNING]
 > **Aviso de Segurança (Disclaimer Honesto):**
@@ -317,13 +319,13 @@ Modelo final: gemini-3.8-flash
 ============================================================
 ```
 
-*(Nota: Nesta tarefa curta de 3 turnos, o prefixo continha apenas o system prompt com 640 tokens, abaixo do limiar de 4.096 tokens para ativação do cache implícito do Gemini. Ao fornecer `--contexto-repo`, o head atinge ~26k tokens e a economia atinge 76,2%, como demonstrado no benchmark).*
+*(Nota: Nesta tarefa curta de 3 turnos, o prefixo continha apenas o system prompt com 640 tokens, abaixo do limiar de 4.096 tokens para ativação do cache implícito do Gemini. O totalTokenCount reportado pela API da Gemini pode incluir tokens de thinking/raciocínio interno em modelos que suportam pensamento nativo. Ao fornecer `--contexto-repo`, o head atinge ~26k tokens e a economia atinge 76,2%, como demonstrado no benchmark).*
 
 ---
 
 ## Executando a Suíte de Testes
 
-Os 58 testes unitários são executados 100% offline (utilizam mocks e providers fakes, sem dependência de rede ou consumo de cotas de API):
+Os 68 testes unitários são executados 100% offline (utilizam mocks e providers fakes, sem dependência de rede ou consumo de cotas de API):
 
 ```bash
 pytest tests/ -q
@@ -332,8 +334,8 @@ pytest tests/ -q
 Saída esperada:
 
 ```text
-..........................................................               [100%]
-58 passed in 0.30s
+....................................................................     [100%]
+68 passed in 0.40s
 ```
 
 Os testes cobrem:

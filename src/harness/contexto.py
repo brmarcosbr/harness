@@ -10,7 +10,7 @@ PREFIXO_CONTEXTO = "\n\n=== CONTEXTO DO PROJETO ===\n"
 
 def sha256_head(head_texto: str) -> str:
     """
-    Função pura que calcula o hash SHA-256 dos 16 primeiros caracteres hexadecimais do head.
+    Função pura que calcula o hash SHA-256 do head inteiro e retorna os 16 primeiros caracteres hexadecimais.
     Permite verificar a invariância de prefixo (prefix invariance) de forma compacta e auditável.
     """
     return hashlib.sha256(head_texto.encode("utf-8")).hexdigest()[:16]

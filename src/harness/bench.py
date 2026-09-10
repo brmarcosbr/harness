@@ -1,6 +1,7 @@
 """Módulo de benchmark do Agent Harness — avaliação comparativa de cache ON/OFF."""
 
 from pathlib import Path
+import re
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -89,7 +90,10 @@ def validar(
         except Exception as e:
             return False, f"Falha ao ler bench_mapa.md: {e}"
 
-        modulos_encontrados = [m for m in MODULOS_ESPERADOS_T1 if m in conteudo]
+        modulos_encontrados = [
+            m for m in MODULOS_ESPERADOS_T1
+            if re.search(r"\b" + re.escape(m) + r"\b", conteudo)
+        ]
         if len(modulos_encontrados) >= 6:
             return True, f"bench_mapa.md contém {len(modulos_encontrados)} módulos identificados."
         return (
@@ -231,6 +235,8 @@ def imprimir_tabela(resultados: List[Dict[str, Any]]) -> str:
         custo = f"${r['custo_real']:.6f}"
         if r["economia"] > 0:
             economia_str = f"${r['economia']:.6f} ({r['economia_pct']:.1f}%)"
+        elif r["economia"] < 0:
+            economia_str = f"-${abs(r['economia']):.6f} ({r['economia_pct']:.1f}%) (REGRESSAO)"
         else:
             economia_str = "$0.000000 (0.0%)"
         sucesso_str = "SIM" if r["sucesso"] else "NÃO"
@@ -254,10 +260,12 @@ def imprimir_tabela(resultados: List[Dict[str, Any]]) -> str:
         if b["total"] > 0:
             econ_total = b["custo_sem_cache"] - b["custo_real"]
             econ_pct = (econ_total / b["custo_sem_cache"] * 100.0) if b["custo_sem_cache"] > 0 else 0.0
-            if econ_total < 0 or b["cached"] == 0:
-                econ_total = 0.0
-                econ_pct = 0.0
-            econ_str = f"${econ_total:.6f} ({econ_pct:.1f}%)"
+            if econ_total < 0:
+                econ_str = f"-${abs(econ_total):.6f} ({econ_pct:.1f}%) (REGRESSAO)"
+            elif econ_total == 0 or b["cached"] == 0:
+                econ_str = "$0.000000 (0.0%)"
+            else:
+                econ_str = f"${econ_total:.6f} ({econ_pct:.1f}%)"
             custo_str = f"${b['custo_real']:.6f}"
             linhas.append(
                 f"| **{label}** | {'ON' if 'ON' in label else 'OFF'} | {b['turnos']} | {b['prompt']} | {b['cached']} | {custo_str} | {econ_str} | {b['sucessos']}/{b['total']} |"

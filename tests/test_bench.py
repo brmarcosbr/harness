@@ -199,3 +199,41 @@ def test_imprimir_tabela(capsys):
     assert "TOTAL CACHE ON" in tabela
     assert "TOTAL CACHE OFF" in tabela
     assert "TABELA COMPARATIVA DE BENCHMARK" in captured
+
+
+def test_validar_t1_mapa_palavra_inteira_ignora_substring(tmp_path):
+    # Conteúdo com "configuração" não deve casar "config"
+    conteudo = (
+        "- configuração do sistema\n"
+        "- contexto do projeto\n"
+        "- loop principal\n"
+    )
+    (tmp_path / "bench_mapa.md").write_text(conteudo, encoding="utf-8")
+    valido, detalhe = validar("mapa", [], tmp_path)
+    assert valido is False
+    # Apenas contexto e loop foram identificados (2 módulos)
+    assert "2 módulos" in detalhe
+
+
+def test_imprimir_tabela_com_economia_negativa(capsys):
+    dados_mock = [
+        {
+            "tarefa_id": "T1",
+            "tarefa_nome": "mapa",
+            "cache": "ON",
+            "cache_habilitado": True,
+            "turnos": 3,
+            "prompt_tokens": 1200,
+            "cached_tokens": 500,
+            "completion_tokens": 50,
+            "custo_real": 0.001200,
+            "custo_sem_cache": 0.001000,
+            "economia": -0.000200,
+            "economia_pct": -20.0,
+            "sucesso": True,
+            "latencia": 1.2,
+        }
+    ]
+    tabela = imprimir_tabela(dados_mock)
+    assert "-$0.000200 (-20.0%) (REGRESSAO)" in tabela
+

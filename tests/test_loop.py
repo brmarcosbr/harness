@@ -273,4 +273,31 @@ def test_loop_resposta_vazia_sem_tool_calls_nao_marca_concluido(capsys):
     assert resultado.historico[0]["role"] == "user"
 
 
+def test_loop_type_error_interno_propaga_harness_error(monkeypatch):
+    def fake_tool_com_bug(**kwargs):
+        # TypeError interno do corpo da função (e não da assinatura de chamada)
+        return 10 + "string_invalida"
+
+    monkeypatch.setitem(
+        __import__("harness.loop", fromlist=["TOOL_REGISTRY"]).TOOL_REGISTRY,
+        "tool_com_bug",
+        fake_tool_com_bug
+    )
+
+    resp_call = ProviderResponse(
+        text="",
+        tool_calls=[{"id": "call_bug", "name": "tool_com_bug", "args": {"x": 1}}],
+        usage={"prompt": 20, "completion": 5, "total": 25, "cached": 0},
+        modelo="fake-model"
+    )
+    provider = FakeProvider(respostas=[resp_call])
+
+    with pytest.raises(HarnessError) as exc_info:
+        executar_loop(tarefa="executar bug", provider=provider, max_turns=3)
+
+    assert "Erro interno na execução da tool 'tool_com_bug'" in str(exc_info.value)
+    assert "unsupported operand type" in str(exc_info.value)
+
+
+
 
