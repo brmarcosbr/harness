@@ -20,6 +20,12 @@ PADROES_BLOQUEADOS = [
     r"\berase\s+/[sfq]\b|\berase\b.*/[sfq]",
     r"\bcipher\s+/w\b",
     r"\btaskkill\s+/[fF]\s+/[iI][mM]\b|\btaskkill\b.*(?=.*\/[fF])(?=.*\/[iI][mM])",
+    # Wildcards destrutivos: del/erase/rmdir/rd com *
+    r"\b(del|erase|rmdir|rd)\b[^&|;]*\*",
+    # git clean com -f ou --force
+    r"\bgit\s+clean\b[^&|;]*(?:-[a-zA-Z0-9]*f|--force)",
+    # type nul > (truncamento de arquivo)
+    r"\btype\s+nul\s*>",
 ]
 
 LIMITE_LEITURA_ARQUIVO_BYTES = 200 * 1024  # 200 KB
@@ -31,6 +37,28 @@ LIMITE_TRUNCAMENTO_SAIDA = 4000
 DIRS_IGNORADOS_BUSCA = DIRS_IGNORADOS
 
 
+def _destino_redirecionamento(comando: str) -> Optional[str]:
+    """
+    Função pura que extrai o destino de um redirecionamento '>' ou '>>' no comando, se houver.
+    Trata aspas simples e duplas no caminho e ignora redirecionamentos de descritor como '2>&1'.
+    """
+    match = re.search(r"(?:^|[^>])(?:>>|>)\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s>&|]+))", comando)
+    if match:
+        destino = match.group(1) or match.group(2) or match.group(3)
+        return destino.strip() if destino else None
+    return None
+
+
+def _destino_redirecionamento_e_protegido(destino: str) -> bool:
+    """Verifica se o destino de redirecionamento atinge arquivo/pasta protegida (.env ou .git)."""
+    dest_norm = destino.replace("\\", "/").lower().strip()
+    partes = [p for p in dest_norm.split("/") if p and p != "."]
+    for parte in partes:
+        if parte == ".env" or parte == ".git" or parte.startswith(".env") or parte.startswith(".git"):
+            return True
+    return False
+
+
 def comando_bloqueado(comando: str) -> Optional[str]:
     """
     Função pura que avalia se o comando contém padrões destrutivos de sistema no cmd.exe.
@@ -40,6 +68,11 @@ def comando_bloqueado(comando: str) -> Optional[str]:
     for padrao in PADROES_BLOQUEADOS:
         if re.search(padrao, cmd_lower):
             return padrao
+
+    destino = _destino_redirecionamento(comando)
+    if destino and _destino_redirecionamento_e_protegido(destino):
+        return r"redirecionamento_destino_protegido"
+
     return None
 
 

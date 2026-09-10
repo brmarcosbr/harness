@@ -259,3 +259,51 @@ def test_modelos_a_tentar_preserva_ordem():
     )
     assert modelos == ["modelo-a", "modelo-b", "modelo-c"]
 
+
+def test_mensagens_para_gemini_contents_agrupa_tool_calls_adjacentes():
+    mensagens = [
+        {"role": "user", "text": "Execute duas ferramentas"},
+        {
+            "role": "model",
+            "text": "Executando...",
+            "tool_calls": [
+                {"id": "call_1", "name": "executar_comando", "args": {"comando": "dir"}},
+                {"id": "call_2", "name": "ler_arquivo", "args": {"caminho": "a.txt"}}
+            ]
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": "executar_comando",
+            "resultado": {"stdout": "ok", "codigo_saida": 0}
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_2",
+            "name": "ler_arquivo",
+            "resultado": {"sucesso": True, "conteudo": "hello"}
+        }
+    ]
+    contents = mensagens_para_gemini_contents(mensagens)
+
+    # user + model + 1 user único agrupando as 2 functionResponses
+    assert len(contents) == 3
+    assert contents[0]["role"] == "user"
+    assert contents[1]["role"] == "model"
+    assert contents[2]["role"] == "user"
+
+    parts_user_tools = contents[2]["parts"]
+    assert len(parts_user_tools) == 2
+    assert "functionResponse" in parts_user_tools[0]
+    assert parts_user_tools[0]["functionResponse"]["name"] == "executar_comando"
+    assert parts_user_tools[0]["functionResponse"]["id"] == "call_1"
+    assert "functionResponse" in parts_user_tools[1]
+    assert parts_user_tools[1]["functionResponse"]["name"] == "ler_arquivo"
+    assert parts_user_tools[1]["functionResponse"]["id"] == "call_2"
+
+    # Invariante: nenhum par de contents consecutivos tem o mesmo role
+    for i in range(len(contents) - 1):
+        assert contents[i]["role"] != contents[i + 1]["role"], (
+            f"Roles consecutivas iguais na posição {i}: {contents[i]['role']}"
+        )
+

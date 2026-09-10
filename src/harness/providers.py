@@ -146,14 +146,21 @@ def mensagens_para_gemini_contents(mensagens: List[Dict[str, Any]]) -> List[Dict
             if msg.get("tool_call_id"):
                 fr_part["id"] = msg["tool_call_id"]
 
-            contents.append({
-                "role": "user",
-                "parts": [
-                    {
-                        "functionResponse": fr_part
-                    }
-                ]
-            })
+            part_obj = {"functionResponse": fr_part}
+
+            # Agrupa respostas de ferramentas adjacentes no mesmo bloco user
+            # para evitar conteúdos consecutivos com role 'user' (HTTP 400 na API Gemini)
+            if (
+                contents
+                and contents[-1].get("role") == "user"
+                and any("functionResponse" in p for p in contents[-1].get("parts", []))
+            ):
+                contents[-1]["parts"].append(part_obj)
+            else:
+                contents.append({
+                    "role": "user",
+                    "parts": [part_obj]
+                })
 
     return contents
 

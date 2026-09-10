@@ -13,6 +13,7 @@ from harness.tools import (
     LIMITE_ESCRITA_ARQUIVO_BYTES,
     TOOLS,
     TOOL_REGISTRY,
+    _destino_redirecionamento,
 )
 
 
@@ -33,6 +34,23 @@ def test_comando_bloqueado_padroes_destrutivos():
         "erase /s /q *.*",
         "cipher /w:C:",
         "taskkill /f /im notepad.exe",
+        # Wildcard destrutivo
+        "del *.py",
+        "erase *.*",
+        "rd *",
+        "rmdir *",
+        # git clean -f
+        "git clean -f",
+        "git clean -fdx",
+        "git clean -xdf",
+        "git clean --force",
+        # type nul > truncamento
+        "type nul > arquivo.txt",
+        "type nul > src/modulo.py",
+        # Redirecionamento para arquivos protegidos
+        "echo segredo > .env",
+        "echo alteracao >> .git/config",
+        "echo hack > subpasta/.env",
     ]
     for cmd in comandos_proibidos:
         assert comando_bloqueado(cmd) is not None, f"Deveria ter bloqueado: {cmd}"
@@ -47,10 +65,22 @@ def test_comando_bloqueado_permitidos():
         "python w2_teste.py",
         "git status",
         "mkdir pasta_nova",
-        "del arquivo.txt",  # del sem /s é permitido
+        "del arquivo.txt",  # del pontual sem wildcard nem /s é permitido
+        "echo oi > novo.txt",  # redirecionamento sem caminho protegido
+        "echo dados >> saida.log",
+        "rd pasta",  # rd sem /s nem *
     ]
     for cmd in comandos_seguros:
         assert comando_bloqueado(cmd) is None, f"Deveria ter permitido: {cmd}"
+
+
+def test_destino_redirecionamento():
+    assert _destino_redirecionamento("echo teste > .env") == ".env"
+    assert _destino_redirecionamento("echo chave >> .git/config") == ".git/config"
+    assert _destino_redirecionamento("echo oi > \"caminho com espaco.txt\"") == "caminho com espaco.txt"
+    assert _destino_redirecionamento("echo teste > 'arquivo.txt'") == "arquivo.txt"
+    assert _destino_redirecionamento("dir 2>&1") is None
+    assert _destino_redirecionamento("python script.py") is None
 
 
 def test_executar_comando_bloqueio_seguranca():
