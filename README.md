@@ -3,7 +3,7 @@
 > Loop multi-turno agnóstico de provider, tool use segura e **74,6% a 76,2% de economia de custo via context caching** (benchmark real com Gemini).
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-129%2F129%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-135%2F135%20passing-brightgreen)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 ![Zero Libs](https://img.shields.io/badge/external--deps-zero-informational)
 ![CI](https://github.com/brmarcosbr/harness/actions/workflows/ci.yml/badge.svg)
@@ -167,7 +167,12 @@ A partir do Marco W7 (e consolidação W7.7), o harness adota uma **política de
      - `dir`: Inspeção de diretórios do projeto (executada nativamente em Python para evitar dependência do shell).
      - `type`: Leitura rápida de arquivos (executada nativamente com validação de caminhos e bloqueio a arquivos protegidos).
      - `python`: Execução estrita de scripts Python dentro do projeto (`python <arquivo>.py`). Flags de interpretação inline (`-c`, `-m`, `-i`), referências com `..` e caminhos absolutos são categoricamente bloqueados.
-     - `git`: **Metadados Puros Apenas** (`git status`, `git ls-files` e `git log --oneline`). Subcomandos que exibem conteúdo ou diffs (`diff`, `show`, `log -p`, `--stat`, `--patch`, etc.) foram completamente eliminados do whitelist para erradicar vetores de exfiltração de arquivos protegidos; saídas de metadados têm linhas que citam arquivos protegidos (incluindo padrões de renomeação `{old => new}`) integralmente omitidas por um redator de linha única.
+     - `git`: **Metadados Puros por Allowlist Estrita** (`git status`, `git ls-files` e `git log --oneline`).
+        - Subcomandos que exibem conteúdo ou diffs (`diff`, `show`, `log -p`, etc.) foram completamente eliminados do whitelist.
+        - **Allowlist de Flags:** Para `status`, aceitam-se apenas flags de metadados (`--short`, `-s`, `--porcelain`, `--branch`, `-b`, `--untracked-files`, `-u`, `--ignored`, `--long`), bloqueando `-v`, `-vv`, `--verbose`, `-z`, `--null`. Para `ls-files`, aceitam-se apenas metadados (`--cached`, `-c`, `--others`, `-o`, `--stage`, `-s`, `-t`, `--full-name`, `--exclude-standard`, etc.). Para `log`, exige-se `--oneline` e aceitam-se `--stat`, `-n <N>`, `-n<N>`, `--max-count=<N>` e caminhos seguros.
+        - **Pathspec Magic:** Qualquer argumento com prefixo `:` (ex.: `:(top).env`) é categoricamente rejeitado para impedir evasão de filtros de caminho.
+        - **Redator Fail-Safe com Suporte a NUL:** Saídas são inspecionadas por linha e por registros NUL (`\x00`). Linhas ou registros que citem arquivos protegidos (incluindo padrões de renomeação `{old => new}`) são sumariamente omitidos.
+        - **Trade-off de Super-Redação:** Mensagens de commit que citem arquivos protegidos (ex.: `add .env`) fazem a linha inteira correspondente de `git log --oneline` ser omitida da resposta ao modelo. Essa escolha deliberada de segurança previne que títulos de commits vazem nomes ou referências a segredos.
      - `findstr`: Busca textual rápida (com fallback transparente em plataformas não-Windows, atuando como busca por substring direta em arquivos sem suporte a flags avançadas do findstr nativo do Windows).
      - `where`: Localização de executáveis seguros no PATH (com fallback cross-platform via `shutil.which`, tratando automaticamente o mapeamento de `python` para `python3` caso necessário).
      - `echo`: Impressão de texto no terminal (sem permitir redirecionamento via shell).
@@ -383,7 +388,7 @@ Modelo final: gemini-3.8-flash
 
 ## Executando a Suíte de Testes
 
-Os 129 testes unitários são executados 100% offline (utilizam mocks e providers fakes, sem dependência de rede ou consumo de cotas de API):
+Os 135 testes unitários são executados 100% offline (utilizam mocks e providers fakes, sem dependência de rede ou consumo de cotas de API):
 
 ```bash
 pytest tests/ -q
@@ -392,8 +397,8 @@ pytest tests/ -q
 Saída esperada:
 
 ```text
-.................................................................................................................................  [100%]
-129 passed in 2.05s
+.......................................................................................................................................  [100%]
+135 passed in 2.75s
 ```
 
 Os testes cobrem:

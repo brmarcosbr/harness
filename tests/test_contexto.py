@@ -143,6 +143,23 @@ def test_gerar_contexto_repo_ordenacao_e_filtros(tmp_path):
     assert "cache.py" not in contexto
 
 
+def test_gerar_contexto_repo_arquivo_grande_nao_aborta_posteriores(tmp_path):
+    # a_pequeno cabe no orçamento
+    (tmp_path / "a_pequeno.py").write_text("x = 1\n", encoding="utf-8")
+    # b_grande excede o limite de tokens configurado
+    (tmp_path / "b_grande.py").write_text("y = " + ("1" * 1000) + "\n", encoding="utf-8")
+    # c_pequeno vem depois do grande mas deve ser incluído porque cabe no saldo restante
+    (tmp_path / "c_pequeno.py").write_text("z = 2\n", encoding="utf-8")
+
+    # Orçamento suficiente para a e c (~30 tokens), mas insuficiente para incluir b (~280 tokens)
+    contexto = gerar_contexto_repo(tmp_path, limite_tokens=50)
+
+    assert "===== ARQUIVO: a_pequeno.py =====" in contexto
+    assert "===== ARQUIVO: b_grande.py =====" not in contexto
+    assert "===== ARQUIVO: c_pequeno.py =====" in contexto
+
+
+
 def test_gerar_contexto_repo_respeita_limite_sem_partir_arquivo(tmp_path):
     # Cada arquivo tem ~100 tokens (400 caracteres)
     conteudo = "x" * 400

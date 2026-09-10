@@ -80,7 +80,7 @@ def gerar_contexto_repo(
         bloco = f"\n===== ARQUIVO: {caminho_rel} =====\n{conteudo}"
         novo_acumulado = acumulado + bloco
         if estimar_tokens(novo_acumulado) > limite_tokens:
-            break
+            continue
         acumulado = novo_acumulado
 
     return acumulado
