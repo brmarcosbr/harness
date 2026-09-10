@@ -620,10 +620,11 @@ def validar_comando_whitelist(
                     return f"Acesso a caminho protegido bloqueado no git: '{a}'."
 
                 # Inspeciona se 'a' é um objeto git nu (blob, tree, commit, tag)
+                # Descasca tags recursivamente com ^{} para obter o tipo do objeto alvo final
                 e_objeto_git = False
                 try:
                     res_cat = subprocess.run(
-                        ["git", "cat-file", "-t", a],
+                        ["git", "cat-file", "-t", f"{a}^{{}}"],
                         cwd=str(raiz),
                         capture_output=True,
                         text=True,
@@ -633,10 +634,27 @@ def validar_comando_whitelist(
                         tipo_obj = res_cat.stdout.strip()
                         if tipo_obj in ("blob", "tree"):
                             return f"Objeto git nu (blob/tree) não permitido no git {subcmd}: '{a}'."
-                        if tipo_obj in ("commit", "tag"):
+                        if tipo_obj == "commit":
                             e_objeto_git = True
                         else:
                             return f"Tipo de objeto git não permitido no git {subcmd}: '{a}'."
+                    else:
+                        # Fallback de checagem direta sem peel
+                        res_direct = subprocess.run(
+                            ["git", "cat-file", "-t", a],
+                            cwd=str(raiz),
+                            capture_output=True,
+                            text=True,
+                            timeout=5,
+                        )
+                        if res_direct.returncode == 0:
+                            tipo_direct = res_direct.stdout.strip()
+                            if tipo_direct in ("blob", "tree"):
+                                return f"Objeto git nu (blob/tree) não permitido no git {subcmd}: '{a}'."
+                            if tipo_direct == "commit":
+                                e_objeto_git = True
+                            else:
+                                return f"Tipo de objeto git não permitido no git {subcmd}: '{a}'."
                 except Exception:
                     pass
 

@@ -1372,7 +1372,7 @@ def test_git_bloqueio_objetos_nus_blob_e_tree(tmp_path):
     assert res7["codigo_saida"] == -1
     assert "Objeto git nu (blob/tree) não permitido" in res7["stderr"]
 
-    # Bloqueio de objeto tree
+    # Bloqueio de objeto tree direto e HEAD^{tree}
     res_t1 = executar_comando(f"git show {tree_sha}", base_dir=tmp_path)
     assert res_t1["codigo_saida"] == -1
     assert "Objeto git nu (blob/tree) não permitido" in res_t1["stderr"]
@@ -1380,6 +1380,64 @@ def test_git_bloqueio_objetos_nus_blob_e_tree(tmp_path):
     res_t2 = executar_comando(f"git show --stat {tree_sha}", base_dir=tmp_path)
     assert res_t2["codigo_saida"] == -1
     assert "Objeto git nu (blob/tree) não permitido" in res_t2["stderr"]
+
+    res_t3 = executar_comando('git show "HEAD^{tree}"', base_dir=tmp_path)
+    assert res_t3["codigo_saida"] == -1
+    assert "Objeto git nu (blob/tree) não permitido" in res_t3["stderr"]
+
+    res_t4 = executar_comando('git show --stat "HEAD^{tree}"', base_dir=tmp_path)
+    assert res_t4["codigo_saida"] == -1
+    assert "Objeto git nu (blob/tree) não permitido" in res_t4["stderr"]
+
+    # Criação de tags leves e anotadas apontando para blob, tree e commit
+    subprocess.run(["git", "tag", "tagleve_blob", blob_sha], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "tag", "-a", "taganotada_blob", "-m", "tag blob", blob_sha], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "tag", "-a", "taganotada_tree", "-m", "tag tree", tree_sha], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "tag", "-a", "taganotada_commit", "-m", "tag commit", commit_sha], cwd=str(tmp_path), capture_output=True)
+
+    # 1. Tag LEVE apontando para blob deve ser recusada e não vazar segredo
+    res_tl1 = executar_comando("git show tagleve_blob", base_dir=tmp_path)
+    assert res_tl1["codigo_saida"] == -1
+    assert "Objeto git nu (blob/tree) não permitido" in res_tl1["stderr"]
+    assert "SUPERSEGREDO_CRITICO" not in res_tl1["stdout"]
+    assert "SUPERSEGREDO_CRITICO" not in res_tl1["stderr"]
+
+    res_tl2 = executar_comando("git show --stat tagleve_blob", base_dir=tmp_path)
+    assert res_tl2["codigo_saida"] == -1
+    assert "Objeto git nu (blob/tree) não permitido" in res_tl2["stderr"]
+    assert "SUPERSEGREDO_CRITICO" not in res_tl2["stdout"]
+    assert "SUPERSEGREDO_CRITICO" not in res_tl2["stderr"]
+
+    # 2. Tag ANOTADA apontando para blob deve ser recusada e não vazar segredo
+    res_ta1 = executar_comando("git show taganotada_blob", base_dir=tmp_path)
+    assert res_ta1["codigo_saida"] == -1
+    assert "Objeto git nu (blob/tree) não permitido" in res_ta1["stderr"]
+    assert "SUPERSEGREDO_CRITICO" not in res_ta1["stdout"]
+    assert "SUPERSEGREDO_CRITICO" not in res_ta1["stderr"]
+
+    res_ta2 = executar_comando("git show --stat taganotada_blob", base_dir=tmp_path)
+    assert res_ta2["codigo_saida"] == -1
+    assert "Objeto git nu (blob/tree) não permitido" in res_ta2["stderr"]
+    assert "SUPERSEGREDO_CRITICO" not in res_ta2["stdout"]
+    assert "SUPERSEGREDO_CRITICO" not in res_ta2["stderr"]
+
+    # 3. Tag ANOTADA apontando para tree deve ser recusada
+    res_tt1 = executar_comando("git show taganotada_tree", base_dir=tmp_path)
+    assert res_tt1["codigo_saida"] == -1
+    assert "Objeto git nu (blob/tree) não permitido" in res_tt1["stderr"]
+
+    res_tt2 = executar_comando("git show --stat taganotada_tree", base_dir=tmp_path)
+    assert res_tt2["codigo_saida"] == -1
+    assert "Objeto git nu (blob/tree) não permitido" in res_tt2["stderr"]
+
+    # 4. Tag ANOTADA apontando para commit DEVE continuar permitida
+    res_tc1 = executar_comando("git show --stat taganotada_commit", base_dir=tmp_path)
+    assert res_tc1["codigo_saida"] == 0
+    assert res_tc1["stdout"] != ""
+    assert "SUPERSEGREDO_CRITICO" not in res_tc1["stdout"]
+
+    res_tc2 = executar_comando("git log taganotada_commit", base_dir=tmp_path)
+    assert res_tc2["codigo_saida"] == 0
 
     # Bloqueio em git log
     res_l1 = executar_comando(f"git log {blob_sha}", base_dir=tmp_path)
