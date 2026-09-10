@@ -327,7 +327,7 @@ Modelo final: gemini-3.8-flash
 
 ## Executando a Suíte de Testes
 
-Os 68 testes unitários são executados 100% offline (utilizam mocks e providers fakes, sem dependência de rede ou consumo de cotas de API):
+Os 79 testes unitários são executados 100% offline (utilizam mocks e providers fakes, sem dependência de rede ou consumo de cotas de API):
 
 ```bash
 pytest tests/ -q
@@ -336,8 +336,8 @@ pytest tests/ -q
 Saída esperada:
 
 ```text
-....................................................................     [100%]
-68 passed in 0.40s
+...............................................................................     [100%]
+79 passed in 0.40s
 ```
 
 Os testes cobrem:

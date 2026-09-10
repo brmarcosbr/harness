@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 from harness.config import COMMAND_TIMEOUT_SECONDS, DIRS_IGNORADOS, CAMINHOS_PROTEGIDOS
 
 # Padrões bloqueados de comandos destrutivos de sistema no Windows / cmd.exe
