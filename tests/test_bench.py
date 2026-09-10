@@ -68,16 +68,29 @@ def test_validar_t1_mapa(tmp_path):
 
 
 def test_validar_t2_geracao_com_teste():
-    # 1. Histórico sem chamada de execução deve falhar
+    # 1. Histórico sem arquivo de teste deve falhar
     valido, detalhe = validar("geracao-com-teste", [], ".")
     assert valido is False
-    assert "Nenhuma execução" in detalhe
+    assert "não encontrado ou não contém asserção" in detalhe
 
     # 2. Histórico com código de saída != 0 deve falhar
     hist_falha = [
         {
             "role": "model",
-            "tool_calls": [{"id": "call_1", "name": "executar_comando", "args": {"comando": "python bench_test_math.py"}}],
+            "tool_calls": [
+                {
+                    "id": "call_w0",
+                    "name": "escrever_arquivo",
+                    "args": {"caminho": "bench_test_math.py", "conteudo": "assert soma(1, 2) == 3\n"}
+                },
+                {"id": "call_1", "name": "executar_comando", "args": {"comando": "python bench_test_math.py"}}
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "escrever_arquivo",
+            "tool_call_id": "call_w0",
+            "resultado": {"sucesso": True},
         },
         {
             "role": "tool",
@@ -88,12 +101,26 @@ def test_validar_t2_geracao_com_teste():
     ]
     valido, detalhe = validar("geracao-com-teste", hist_falha, ".")
     assert valido is False
+    assert "Nenhuma execução válida" in detalhe
 
-    # 3. Histórico com código de saída 0 deve passar
+    # 3. Histórico com código de saída 0 e teste contendo assert deve passar
     hist_sucesso = [
         {
             "role": "model",
-            "tool_calls": [{"id": "call_1", "name": "executar_comando", "args": {"comando": "python bench_test_math.py"}}],
+            "tool_calls": [
+                {
+                    "id": "call_w",
+                    "name": "escrever_arquivo",
+                    "args": {"caminho": "bench_test_math.py", "conteudo": "assert soma(2, 3) == 5\nprint('OK')"}
+                },
+                {"id": "call_1", "name": "executar_comando", "args": {"comando": "python bench_test_math.py"}}
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "escrever_arquivo",
+            "tool_call_id": "call_w",
+            "resultado": {"sucesso": True},
         },
         {
             "role": "tool",
@@ -111,7 +138,20 @@ def test_validar_t3_spec_de_arquivo():
     hist_sucesso = [
         {
             "role": "model",
-            "tool_calls": [{"id": "call_c", "name": "executar_comando", "args": {"comando": "python bench_test_contador.py"}}],
+            "tool_calls": [
+                {
+                    "id": "call_cw",
+                    "name": "escrever_arquivo",
+                    "args": {"caminho": "bench_test_contador.py", "conteudo": "assert True\nprint('Testes passaram')"}
+                },
+                {"id": "call_c", "name": "executar_comando", "args": {"comando": "python bench_test_contador.py"}}
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "escrever_arquivo",
+            "tool_call_id": "call_cw",
+            "resultado": {"sucesso": True},
         },
         {
             "role": "tool",
@@ -324,5 +364,36 @@ def test_rodar_benchmark_respeita_base_dir_e_restaura_cwd(tmp_path):
 
     assert cwd_inicial == cwd_final
     assert len(resultados) == 6  # 3 tarefas x 2 regimes (ON, OFF)
+
+
+def test_validar_t2_e_t3_le_do_disco_quando_ausente_no_historico(tmp_path):
+    # Quando o modelo cria o arquivo via shell ou script em vez de escrever_arquivo,
+    # o validador deve ler o arquivo do disco para verificar a presença de assert.
+    arq_math = tmp_path / "bench_test_math.py"
+    hist_cmd = [
+        {
+            "role": "model",
+            "tool_calls": [{"id": "cmd_1", "name": "executar_comando", "args": {"comando": "python bench_test_math.py"}}],
+        },
+        {
+            "role": "tool",
+            "name": "executar_comando",
+            "tool_call_id": "cmd_1",
+            "resultado": {"codigo_saida": 0, "stdout": "1 test passed", "stderr": ""},
+        },
+    ]
+
+    # 1. Arquivo no disco sem assert -> Inválido
+    arq_math.write_text("print('1 test passed')\n", encoding="utf-8")
+    valido, detalhe = validar("geracao-com-teste", hist_cmd, tmp_path)
+    assert valido is False
+    assert "não contém asserção ('assert')" in detalhe
+
+    # 2. Arquivo no disco com assert -> Válido
+    arq_math.write_text("assert True\nprint('1 test passed')\n", encoding="utf-8")
+    valido, detalhe = validar("geracao-com-teste", hist_cmd, tmp_path)
+    assert valido is True
+    assert "stdout não-vazio" in detalhe
+
 
 

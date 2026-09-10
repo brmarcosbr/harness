@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 from harness.config import DIRS_IGNORADOS
+from harness.tools import caminho_protegido
 
 PREFIXO_CONTEXTO = "\n\n=== CONTEXTO DO PROJETO ===\n"
 
@@ -23,9 +24,9 @@ def gerar_contexto_repo(
 ) -> str:
     """
     Função pura que gera uma representação textual determinística do repositório.
-    Varre o diretório ignorando DIRS_IGNORADOS, ordena arquivos alfabeticamente pelo
-    caminho relativo, e concatena arquivos inteiros até atingir o limite_tokens sem
-    partir nenhum arquivo ao meio.
+    Varre o diretório ignorando DIRS_IGNORADOS e caminhos protegidos segundo caminho_protegido,
+    ordena arquivos alfabeticamente pelo caminho relativo, e concatena arquivos inteiros
+    até atingir o limite_tokens sem partir nenhum arquivo ao meio.
     Pula arquivos binários (com byte nulo) e arquivos maiores que 1 MB.
     """
     base_path = Path(base_dir).resolve()
@@ -33,15 +34,25 @@ def gerar_contexto_repo(
     arquivos_candidatos: List[Tuple[str, Path]] = []
 
     for root, dirs, files in os.walk(base_path):
-        dirs[:] = sorted([d for d in dirs if d not in DIRS_IGNORADOS and not d.endswith(".egg-info")])
+        dirs[:] = sorted([
+            d for d in dirs
+            if d not in DIRS_IGNORADOS
+            and not d.endswith(".egg-info")
+            and not caminho_protegido(d, modo="leitura")
+            and not caminho_protegido((Path(root) / d).relative_to(base_path).as_posix(), modo="leitura")
+        ])
         for file in files:
             p = Path(root) / file
+            try:
+                caminho_rel = p.relative_to(base_path).as_posix()
+            except ValueError:
+                continue
+
+            if caminho_protegido(caminho_rel, modo="leitura") or caminho_protegido(file, modo="leitura"):
+                continue
+
             if any(file.endswith(ext) for ext in ext_tuple):
-                try:
-                    caminho_rel = p.relative_to(base_path).as_posix()
-                    arquivos_candidatos.append((caminho_rel, p))
-                except ValueError:
-                    continue
+                arquivos_candidatos.append((caminho_rel, p))
 
     # Ordenação estrita por caminho relativo garante determinismo
     arquivos_candidatos.sort(key=lambda x: x[0])

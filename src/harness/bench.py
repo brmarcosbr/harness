@@ -105,22 +105,22 @@ def validar(
     elif tarefa_nome == "geracao-com-teste":
         caminho_teste = base / "bench_test_math.py"
         conteudo_teste = ""
-        if caminho_teste.is_file():
+        for m in historico:
+            if m.get("role") == "model":
+                for tc in m.get("tool_calls", []):
+                    if tc.get("name") == "escrever_arquivo":
+                        args = tc.get("args", {})
+                        if isinstance(args, dict) and "bench_test_math.py" in args.get("caminho", ""):
+                            conteudo_teste = args.get("conteudo", "")
+
+        if not conteudo_teste and caminho_teste.is_file():
             try:
                 conteudo_teste = caminho_teste.read_text(encoding="utf-8", errors="replace")
             except Exception as e:
                 return False, f"Falha ao ler bench_test_math.py: {e}"
-        else:
-            for m in historico:
-                if m.get("role") == "model":
-                    for tc in m.get("tool_calls", []):
-                        if tc.get("name") == "escrever_arquivo":
-                            args = tc.get("args", {})
-                            if isinstance(args, dict) and "bench_test_math.py" in args.get("caminho", ""):
-                                conteudo_teste = args.get("conteudo", "")
 
-        if conteudo_teste and "assert" not in conteudo_teste:
-            return False, "Arquivo bench_test_math.py não contém asserção ('assert')."
+        if not conteudo_teste or "assert" not in conteudo_teste:
+            return False, "Arquivo bench_test_math.py não encontrado ou não contém asserção ('assert')."
 
         for m in historico:
             if m.get("role") == "tool" and m.get("name") == "executar_comando":
@@ -137,22 +137,22 @@ def validar(
     elif tarefa_nome == "spec-de-arquivo":
         caminho_teste = base / "bench_test_contador.py"
         conteudo_teste = ""
-        if caminho_teste.is_file():
+        for m in historico:
+            if m.get("role") == "model":
+                for tc in m.get("tool_calls", []):
+                    if tc.get("name") == "escrever_arquivo":
+                        args = tc.get("args", {})
+                        if isinstance(args, dict) and "bench_test_contador.py" in args.get("caminho", ""):
+                            conteudo_teste = args.get("conteudo", "")
+
+        if not conteudo_teste and caminho_teste.is_file():
             try:
                 conteudo_teste = caminho_teste.read_text(encoding="utf-8", errors="replace")
             except Exception as e:
                 return False, f"Falha ao ler bench_test_contador.py: {e}"
-        else:
-            for m in historico:
-                if m.get("role") == "model":
-                    for tc in m.get("tool_calls", []):
-                        if tc.get("name") == "escrever_arquivo":
-                            args = tc.get("args", {})
-                            if isinstance(args, dict) and "bench_test_contador.py" in args.get("caminho", ""):
-                                conteudo_teste = args.get("conteudo", "")
 
-        if conteudo_teste and "assert" not in conteudo_teste:
-            return False, "Arquivo bench_test_contador.py não contém asserção ('assert')."
+        if not conteudo_teste or "assert" not in conteudo_teste:
+            return False, "Arquivo bench_test_contador.py não encontrado ou não contém asserção ('assert')."
 
         for m in historico:
             if m.get("role") == "tool" and m.get("name") == "executar_comando":

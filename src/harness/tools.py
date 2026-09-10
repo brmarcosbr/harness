@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import subprocess
 from typing import Any, Callable, Dict, List, Optional, Set, Union
+import harness.config as config
 from harness.config import COMMAND_TIMEOUT_SECONDS, DIRS_IGNORADOS, CAMINHOS_PROTEGIDOS
 from harness.env import CHAVES_CARREGADAS_ENV
 
@@ -72,8 +73,9 @@ def caminho_protegido(caminho: Union[str, Path], modo: str = "leitura") -> bool:
     if not partes:
         return False
 
-    bloqueio_total = [p.lower() for p in CAMINHOS_PROTEGIDOS.get("bloqueio_total", [])]
-    somente_escrita = [p.lower() for p in CAMINHOS_PROTEGIDOS.get("somente_escrita", [])]
+    caminhos_cfg = getattr(config, "CAMINHOS_PROTEGIDOS", CAMINHOS_PROTEGIDOS)
+    bloqueio_total = [p.lower() for p in caminhos_cfg.get("bloqueio_total", [])]
+    somente_escrita = [p.lower() for p in caminhos_cfg.get("somente_escrita", [])]
 
     # Checa bloqueio total (leitura e escrita)
     for bp in bloqueio_total:

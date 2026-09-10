@@ -476,3 +476,40 @@ def test_podar_historico_aviso_quando_head_e_tail_excedem_teto(capsys):
     assert "[AVISO] contexto head+tail excede o teto de 50 tokens" in captured.out
     assert "reduza o contexto_projeto" in captured.out
     assert len(resultado) == 2
+
+
+def test_gerar_contexto_repo_filtra_caminhos_protegidos(tmp_path, monkeypatch):
+    import harness.config as config
+    from harness.contexto import gerar_contexto_repo
+
+    # Cria pasta normal com arquivo legítimo
+    src_dir = tmp_path / "src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "modulo.py").write_text("print('codigo legitimo')", encoding="utf-8")
+
+    # Cria arquivo .env e pasta .git
+    (tmp_path / ".env").write_text("SEGREDO_ENV=123", encoding="utf-8")
+    (tmp_path / ".env.local").write_text("SEGREDO_LOCAL=456", encoding="utf-8")
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir(parents=True)
+    (git_dir / "config.txt").write_text("git_secret = true", encoding="utf-8")
+
+    # Adiciona nova pasta protegida dinamicamente em CAMINHOS_PROTEGIDOS
+    novos_protegidos = {
+        "bloqueio_total": [".env", ".git", "pasta_secreta"],
+        "somente_escrita": [".github"]
+    }
+    monkeypatch.setattr(config, "CAMINHOS_PROTEGIDOS", novos_protegidos)
+
+    pasta_secreta = tmp_path / "pasta_secreta"
+    pasta_secreta.mkdir(parents=True)
+    (pasta_secreta / "dados.py").write_text("DADO_ULTRA_SECRETO = '123'", encoding="utf-8")
+
+    contexto = gerar_contexto_repo(tmp_path)
+    assert "modulo.py" in contexto
+    assert "SEGREDO_ENV" not in contexto
+    assert "SEGREDO_LOCAL" not in contexto
+    assert "git_secret" not in contexto
+    assert "DADO_ULTRA_SECRETO" not in contexto
+    assert "pasta_secreta" not in contexto
+

@@ -3,7 +3,7 @@
 > Loop multi-turno agnóstico de provider, tool use segura e **74,6% a 76,2% de economia de custo via context caching** (benchmark real com Gemini).
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-79%2F79%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-89%2F89%20passing-brightgreen)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 ![Zero Libs](https://img.shields.io/badge/external--deps-zero-informational)
 ![CI](https://github.com/brmarcosbr/harness/actions/workflows/ci.yml/badge.svg)
@@ -134,6 +134,17 @@ O harness disponibiliza 4 ferramentas nativas para o modelo:
 - **Proteção contra Path Traversal:** Validação estrita via `Path.resolve()` garantindo que nenhum caminho acesse pastas superiores à raiz do projeto (`..` proibido).
 - **Timeouts Rígidos:** Cada execução de comando possui limite padrão de 30 segundos, prevenindo bloqueios em processos interativos ou loops infinitos.
 - **Plataforma Alvo Oficial:** O harness foi projetado para ambiente Windows (shell `cmd.exe`). Em ambientes não-Windows (Linux/macOS), o harness emite um aviso no banner indicando que a blocklist e o system prompt assumem a sintaxe do `cmd.exe` e que comandos destrutivos específicos do POSIX/Linux não são cobertos.
+
+### Limites Conhecidos da Blocklist (Mitigação vs. Sandboxing)
+
+A combinação de blocklist de comandos, inspeção de redirecionamentos, proteção ReDoS e validação de caminhos protegidos é uma camada de mitigação pragmática (*defense-in-depth*) desenhada para desenvolvimento e testes locais assistidos, **NÃO** um sandbox formal de segurança:
+
+1. **O que a blocklist NÃO protege:**
+   - **Binários arbitrários invocados pelo modelo:** Ferramentas como `curl`, `wget` ou `bitsadmin` baixando scripts ou executáveis externos.
+   - **Execução de código arbitrário em interpretadores:** Comandos como `python -c "..."` ou `powershell` executando payloads arbitrários dinâmicos, ofuscados ou codificados em Base64.
+   - **Scripts complexos e substituições:** Scripts batch ou encadeamentos complexos com expansão atrasada de variáveis de ambiente (`cmd /v:on /c "%VAR%"`).
+2. **Execução não-confiável requer Sandbox Formal:**
+   - Ambientes que executam código arbitrário ou não-confiável exigem isolamento formal em nível de kernel via container (Docker sandbox / gVisor) ou microVM efêmera (Firecracker), conforme previsto no roadmap arquitetural (W7+).
 
 > [!WARNING]
 > **Aviso de Segurança (Disclaimer Honesto):**
