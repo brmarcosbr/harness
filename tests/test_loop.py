@@ -118,9 +118,10 @@ def test_loop_max_turns_atingido(monkeypatch, capsys):
     )
 
     provider = FakeProvider(respostas=[resp_loop, resp_loop, resp_loop])
-    historico = executar_loop(tarefa="fique em loop", provider=provider, max_turns=3)
+    resultado = executar_loop(tarefa="fique em loop", provider=provider, max_turns=3)
 
     captured = capsys.readouterr()
+    assert len(resultado.historico) == 7
     assert "[ATENCAO] Nao concluido: max_turns atingido sem resposta final" in captured.out
     assert "Turnos utilizados: 3 de 3" in captured.out
 
@@ -297,6 +298,29 @@ def test_loop_type_error_interno_propaga_harness_error(monkeypatch):
 
     assert "Erro interno na execução da tool 'tool_com_bug'" in str(exc_info.value)
     assert "unsupported operand type" in str(exc_info.value)
+
+
+def test_loop_resposta_com_aviso_truncamento_nao_marca_concluido(capsys):
+    resp_truncada = ProviderResponse(
+        text="Resposta que foi interrompida pelo limite...",
+        tool_calls=[],
+        usage={"prompt": 30, "completion": 50, "total": 80, "cached": 0},
+        modelo="fake-model",
+        finish_reason="length",
+        aviso="Aviso de parada da API OpenAI/DeepSeek: length"
+    )
+    provider = FakeProvider(respostas=[resp_truncada])
+    resultado = executar_loop(tarefa="tarefa que estoura length", provider=provider, max_turns=3)
+    captured = capsys.readouterr()
+
+    # Verifica que o aviso é impresso e a tarefa NÃO é considerada finalizada com sucesso
+    assert "[AVISO] Aviso de parada da API OpenAI/DeepSeek: length" in captured.out
+    assert "[ATENCAO] Nao concluido: max_turns atingido sem resposta final" in captured.out
+    assert "[Resposta Final do Modelo]" not in captured.out
+    # A mensagem truncada não é anexada ao histórico como resposta final
+    assert len(resultado.historico) == 1
+    assert resultado.historico[0]["role"] == "user"
+
 
 
 

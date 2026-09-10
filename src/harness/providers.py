@@ -318,6 +318,7 @@ def normalizar_resposta_openai(data: Dict[str, Any], modelo: str) -> ProviderRes
         return ProviderResponse(text="", tool_calls=[], usage=usage, modelo=modelo)
 
     choice = choices[0]
+    finish_reason = choice.get("finish_reason")
     message = choice.get("message", {})
     text = message.get("content") or ""
 
@@ -341,6 +342,12 @@ def normalizar_resposta_openai(data: Dict[str, Any], modelo: str) -> ProviderRes
             "args": args if isinstance(args, dict) else {}
         })
 
+    aviso = None
+    if finish_reason in {"length", "content_filter"}:
+        aviso = f"Aviso de parada da API OpenAI/DeepSeek: {finish_reason}"
+    elif not text and not tool_calls and finish_reason:
+        aviso = f"Resposta vazia com finish_reason: {finish_reason}"
+
     usage = extrair_metricas_usage(data.get("usage", {}))
     modelo_real = data.get("model") or modelo
 
@@ -348,7 +355,9 @@ def normalizar_resposta_openai(data: Dict[str, Any], modelo: str) -> ProviderRes
         text=text,
         tool_calls=tool_calls,
         usage=usage,
-        modelo=modelo_real
+        modelo=modelo_real,
+        finish_reason=finish_reason,
+        aviso=aviso
     )
 
 

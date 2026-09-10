@@ -318,3 +318,67 @@ def test_montar_endpoint_gemini_sem_api_key_na_url():
     assert "key=" not in endpoint
     assert "?" not in endpoint
 
+
+def test_normalizar_resposta_openai_finish_reason_e_aviso():
+    # 1. finish_reason="length"
+    data_length = {
+        "id": "chatcmpl-len",
+        "model": "deepseek-chat",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "length",
+                "message": {
+                    "role": "assistant",
+                    "content": "Texto cortado pela metade..."
+                }
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 50, "total_tokens": 60}
+    }
+    resp_len = normalizar_resposta_openai(data_length, "deepseek-chat")
+    assert resp_len.finish_reason == "length"
+    assert resp_len.aviso == "Aviso de parada da API OpenAI/DeepSeek: length"
+    assert resp_len.text == "Texto cortado pela metade..."
+
+    # 2. finish_reason="content_filter"
+    data_filter = {
+        "id": "chatcmpl-flt",
+        "model": "deepseek-chat",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "content_filter",
+                "message": {
+                    "role": "assistant",
+                    "content": ""
+                }
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 0, "total_tokens": 10}
+    }
+    resp_flt = normalizar_resposta_openai(data_filter, "deepseek-chat")
+    assert resp_flt.finish_reason == "content_filter"
+    assert resp_flt.aviso == "Aviso de parada da API OpenAI/DeepSeek: content_filter"
+
+    # 3. Resposta vazia com finish_reason="stop"
+    data_stop_vazio = {
+        "id": "chatcmpl-empty",
+        "model": "deepseek-chat",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": ""
+                }
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 0, "total_tokens": 10}
+    }
+    resp_empty = normalizar_resposta_openai(data_stop_vazio, "deepseek-chat")
+    assert resp_empty.finish_reason == "stop"
+    assert resp_empty.aviso == "Resposta vazia com finish_reason: stop"
+
+

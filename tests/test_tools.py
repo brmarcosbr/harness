@@ -17,6 +17,7 @@ from harness.tools import (
     _destinos_redirecionamento,
     caminho_protegido,
     comando_toca_protegido,
+    obter_env_saneado,
 )
 
 
@@ -436,6 +437,73 @@ def test_comando_bloqueado_wrappers_e_evasao():
     ]
     for cmd in comandos_inofensivos:
         assert comando_bloqueado(cmd) is None, f"Deveria ter permitido comando seguro: {cmd}"
+
+
+def test_obter_env_saneado_e_vazamento_subprocess(monkeypatch):
+    from harness.env import CHAVES_CARREGADAS_ENV
+
+    monkeypatch.setenv("GEMINI_API_KEY", "chave-secreta-gemini")
+    monkeypatch.setenv("OPENAI_API_KEY", "chave-secreta-openai")
+    monkeypatch.setenv("MINHA_CUSTOM_SECRET", "segredo-customizado")
+    monkeypatch.setenv("APP_AUTH_TOKEN", "token-autenticacao")
+    monkeypatch.setenv("AWS_ACCESS_KEY", "chave-aws")
+    monkeypatch.setenv("NORMAL_VAR", "conteudo-normal")
+
+    CHAVES_CARREGADAS_ENV.add("VAR_DO_ENV_PROJETO")
+    monkeypatch.setenv("VAR_DO_ENV_PROJETO", "segredo-do-arquivo-env")
+
+    saneado = obter_env_saneado()
+    assert "GEMINI_API_KEY" not in saneado
+    assert "OPENAI_API_KEY" not in saneado
+    assert "MINHA_CUSTOM_SECRET" not in saneado
+    assert "APP_AUTH_TOKEN" not in saneado
+    assert "AWS_ACCESS_KEY" not in saneado
+    assert "VAR_DO_ENV_PROJETO" not in saneado
+    assert saneado.get("NORMAL_VAR") == "conteudo-normal"
+
+    # Executa comando do sistema e verifica que não vaza segredos
+    res = executar_comando("set")
+    assert res["codigo_saida"] == 0
+    assert "chave-secreta-gemini" not in res["stdout"]
+    assert "chave-secreta-openai" not in res["stdout"]
+    assert "segredo-customizado" not in res["stdout"]
+    assert "token-autenticacao" not in res["stdout"]
+    assert "chave-aws" not in res["stdout"]
+    assert "segredo-do-arquivo-env" not in res["stdout"]
+
+
+def test_comando_bloqueado_descritores_numericos_redirecionamento():
+    # Descritores numéricos 1>, 2>, 1>>, 2>> apontando para .env devem ser bloqueados
+    comandos_bloqueados = [
+        "echo x 1> .env",
+        "echo x 2> .env",
+        "echo x 1>> .env",
+        "echo x 2>> .env",
+        'cmd /c "echo x 1> .env"',
+        'powershell -c "echo x 1> .env"',
+    ]
+    for cmd in comandos_bloqueados:
+        assert comando_bloqueado(cmd) is not None, f"Deveria ter bloqueado redirecionamento com descritor: {cmd}"
+
+    # Redirecionamento de descritores padrão como 2>&1 deve ser permitido
+    comandos_permitidos = [
+        "python script.py 2>&1",
+        "dir 2>&1 > saida.txt",
+    ]
+    for cmd in comandos_permitidos:
+        assert comando_bloqueado(cmd) is None, f"Deveria ter permitido redirecionamento de descritor: {cmd}"
+
+
+def test_buscar_no_projeto_protecao_redos_alternancia(tmp_path):
+    # Padrões com alternância repetida devem ser rejeitados antes de compilar
+    res_alt1 = buscar_no_projeto("(a|aa)+$", base_dir=tmp_path)
+    assert res_alt1["sucesso"] is False
+    assert res_alt1["erro"] == "padrão potencialmente catastrófico (quantificador aninhado ou alternância repetida)"
+
+    res_alt2 = buscar_no_projeto("(foo|foobar)+", base_dir=tmp_path)
+    assert res_alt2["sucesso"] is False
+    assert res_alt2["erro"] == "padrão potencialmente catastrófico (quantificador aninhado ou alternância repetida)"
+
 
 
 

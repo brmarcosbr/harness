@@ -20,15 +20,14 @@ def obter_api_key(provider_name: str) -> str:
     if p == "gemini":
         return os.environ.get("GEMINI_API_KEY", "")
     elif p == "deepseek":
-        return os.environ.get("DEEPSEEK_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
+        return os.environ.get("DEEPSEEK_API_KEY", "")
     elif p == "openai":
         return os.environ.get("OPENAI_API_KEY", "")
-    else:
-        # Fallback genérico para providers customizados
-        return os.environ.get(f"{p.upper()}_API_KEY", "")
+    return ""
 
 
-def main():
+def criar_parser() -> argparse.ArgumentParser:
+    """Cria e configura o parser de linha de comando com defaults resolvidos."""
     parser = argparse.ArgumentParser(
         description="Agent Harness — Loop multi-turno agnóstico de provider."
     )
@@ -77,7 +76,18 @@ def main():
         default=MAX_TURNS,
         help=f"Número máximo de turnos de execução (padrão: {MAX_TURNS})."
     )
-    args = parser.parse_args()
+    return parser
+
+
+def parse_args(args=None) -> argparse.Namespace:
+    """Carrega o ambiente .env antes de inicializar o parser e avalia os argumentos."""
+    carregar_env()
+    parser = criar_parser()
+    return parser.parse_args(args)
+
+
+def main():
+    args = parse_args()
 
     if args.contexto and args.contexto_repo:
         print("ERRO: As opções --contexto e --contexto-repo são mutuamente exclusivas.", file=sys.stderr)

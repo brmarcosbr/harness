@@ -224,6 +224,10 @@ def executar_loop(
                 print(f"\n[AVISO] resposta vazia (possível bloqueio: {finish_reason})")
                 break
 
+            if getattr(resp, "aviso", None):
+                print(f"\n[AVISO] {resp.aviso}")
+                break
+
             # Anexa resposta final ao histórico e encerra
             mensagens.append({
                 "role": "model",

@@ -4,8 +4,9 @@ import os
 from pathlib import Path
 import re
 import subprocess
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Union
 from harness.config import COMMAND_TIMEOUT_SECONDS, DIRS_IGNORADOS, CAMINHOS_PROTEGIDOS
+from harness.env import CHAVES_CARREGADAS_ENV
 
 # Padrões bloqueados de comandos destrutivos de sistema no Windows / cmd.exe
 PADROES_BLOQUEADOS = [
@@ -100,11 +101,11 @@ def caminho_protegido(caminho: Union[str, Path], modo: str = "leitura") -> bool:
 def _destinos_redirecionamento(comando: str) -> List[str]:
     """
     Função pura que extrai todos os destinos de redirecionamento '>' ou '>>' no comando,
-    inclusive em comandos encadeados (&, &&, |, ;).
+    inclusive em comandos encadeados (&, &&, |, ;), suportando descritores numéricos (1>, 2>).
     Trata aspas simples e duplas no caminho e ignora redirecionamentos de descritor como '2>&1'.
     """
     destinos: List[str] = []
-    padrao = r"(?:^|[^>0-9])(?:>>|>)\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s>&|;]+))"
+    padrao = r"(?:^|[^&|;])(?:\b[0-9])?(?:>>|>)(?!\s*&)\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s>&|;]+))"
     for match in re.finditer(padrao, comando):
         destino = match.group(1) or match.group(2) or match.group(3)
         if destino:
@@ -291,10 +292,31 @@ def _resolver_caminho_seguro(
     return alvo
 
 
+def obter_env_saneado(chaves_ocultas: Optional[Set[str]] = None) -> Dict[str, str]:
+    """
+    Função pura que retorna cópia de os.environ omitindo chaves sensíveis que terminem
+    com _API_KEY, _SECRET, _TOKEN, _KEY (case-insensitive) ou correspondam a tais sufixos,
+    bem como qualquer chave carregada a partir do arquivo .env (CHAVES_CARREGADAS_ENV)
+    ou explicitamente informada em chaves_ocultas.
+    """
+    env_copia = os.environ.copy()
+    chaves_proibidas_extra = set(chaves_ocultas) if chaves_ocultas else set()
+    sufixos_sensiveis = ("_api_key", "_secret", "_token", "_key")
+
+    for k in list(env_copia.keys()):
+        k_lower = k.lower()
+        if any(k_lower.endswith(sufixo) or k_lower == sufixo.lstrip("_") for sufixo in sufixos_sensiveis):
+            env_copia.pop(k, None)
+        elif k in CHAVES_CARREGADAS_ENV or k in chaves_proibidas_extra:
+            env_copia.pop(k, None)
+
+    return env_copia
+
+
 def executar_comando(comando: str) -> Dict[str, Any]:
     """
     Executa o comando em subprocess no cmd.exe com timeout de 30s.
-    Aplica política de segurança contra comandos destrutivos.
+    Aplica política de segurança contra comandos destrutivos e isolamento de env.
     """
     padrao = comando_bloqueado(comando)
     if padrao:
@@ -313,7 +335,8 @@ def executar_comando(comando: str) -> Dict[str, Any]:
             text=True,
             timeout=COMMAND_TIMEOUT_SECONDS,
             encoding="utf-8",
-            errors="replace"
+            errors="replace",
+            env=obter_env_saneado()
         )
         return {
             "stdout": resultado.stdout,
@@ -391,9 +414,18 @@ def escrever_arquivo(caminho: str, conteudo: str, base_dir: Optional[Path] = Non
         return {"sucesso": False, "erro": f"Falha ao escrever arquivo '{caminho}': {e}", "bytes_escritos": 0}
 
 
+def _padrao_tem_risco_redos(padrao: str) -> bool:
+    """Detecta padrões regex suscetíveis a ReDoS (quantificador aninhado ou alternância repetida)."""
+    if re.search(r"\([^)]*[\+\*\{][^)]*\)[\+\*\{]", padrao):
+        return True
+    if re.search(r"\([^)]*\|[^)]*\)[\+\*\{]", padrao):
+        return True
+    return False
+
+
 def _padrao_tem_quantificador_aninhado(padrao: str) -> bool:
-    """Detecta padrões regex com quantificadores aninhados suscetíveis a ReDoS."""
-    return bool(re.search(r"\([^)]*[\+\*\{][^)]*\)[\+\*\{]", padrao))
+    """Detecta padrões regex com quantificadores aninhados suscetíveis a ReDoS (retrocompatibilidade)."""
+    return _padrao_tem_risco_redos(padrao)
 
 
 def buscar_no_projeto(
@@ -406,10 +438,10 @@ def buscar_no_projeto(
     Ignora diretórios especiais (.git, .venv, etc.) e arquivos > 1 MB ou binários.
     Protegido contra ReDoS e caminhos restritos.
     """
-    if _padrao_tem_quantificador_aninhado(padrao):
+    if _padrao_tem_risco_redos(padrao):
         return {
             "sucesso": False,
-            "erro": "padrão potencialmente catastrófico (quantificador aninhado)",
+            "erro": "padrão potencialmente catastrófico (quantificador aninhado ou alternância repetida)",
             "resultados": []
         }
 
