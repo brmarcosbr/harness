@@ -948,7 +948,8 @@ def test_filtrar_saida_git_omite_linhas_protegidas():
         "\t.env.example\n"
     )
 
-    saida_filtrada = _filtrar_saida_git(saida_status)
+    saida_filtrada, omitidas = _filtrar_saida_git(saida_status)
+    assert omitidas == 2
     assert "app.py" in saida_filtrada
     assert "README.md" in saida_filtrada
     assert ".env.example" in saida_filtrada
@@ -1078,7 +1079,8 @@ def test_filtro_git_status_ls_files_e_log_renomeacoes():
         "  .env.local\n"
         "  novo.py\n"
     )
-    saida_filtrada = _filtrar_saida_git(saida_bruta)
+    saida_filtrada, omitidas = _filtrar_saida_git(saida_bruta)
+    assert omitidas == 5
     assert "app.py" in saida_filtrada
     assert "novo.py" in saida_filtrada
     assert ".env" not in saida_filtrada
@@ -1536,8 +1538,9 @@ def test_git_z_e_null_bloqueados_e_redator_nul():
 
     # 2. Defesa em profundidade no _filtrar_saida_git tratando registros NUL
     saida_nul_bruta = "app.py\x00.env\x00src/main.py\x00secrets/.envrc\x00README.md\x00"
-    filtrada = _filtrar_saida_git(saida_nul_bruta)
+    filtrada, omitidas = _filtrar_saida_git(saida_nul_bruta)
 
+    assert omitidas == 2
     assert "app.py" in filtrada
     assert "src/main.py" in filtrada
     assert "README.md" in filtrada
@@ -1585,6 +1588,119 @@ def test_git_log_allowlist_stat_e_max_count(tmp_path):
     assert res4["codigo_saida"] == 0
     assert "SEGREDO" not in res4["stdout"]
     assert ".env" not in res4["stdout"]
+
+
+def test_blocklist_aplica_apenas_em_verbos_e_permite_argumentos_leitura(tmp_path):
+    doc = tmp_path / "DOC.md"
+    doc.write_text(
+        "Instruções do sistema:\n"
+        "Passo 1: execute rm -rf temporario para limpar os caches.\n"
+        "Passo 2: o comando shutdown desliga a maquina de forma controlada.\n",
+        encoding="utf-8"
+    )
+
+    # 1. Comandos de leitura buscando strings que casavam na antiga blocklist geral
+    res_rm = executar_comando('findstr "rm -rf" DOC.md', base_dir=tmp_path)
+    assert res_rm["codigo_saida"] == 0
+    assert "rm -rf" in res_rm["stdout"]
+
+    res_shutdown = executar_comando('findstr shutdown DOC.md', base_dir=tmp_path)
+    assert res_shutdown["codigo_saida"] == 0
+    assert "shutdown" in res_shutdown["stdout"]
+
+    # 2. Verbos destrutivos continuam categoricamente recusados
+    res_format = executar_comando("format C:", base_dir=tmp_path)
+    assert res_format["codigo_saida"] == -1
+
+    res_rm_verb = executar_comando("rm -rf pasta", base_dir=tmp_path)
+    assert res_rm_verb["codigo_saida"] == -1
+
+    res_del = executar_comando("del DOC.md", base_dir=tmp_path)
+    assert res_del["codigo_saida"] == -1
+
+    res_diskpart = executar_comando("diskpart", base_dir=tmp_path)
+    assert res_diskpart["codigo_saida"] == -1
+
+    res_shut_verb = executar_comando("shutdown /s", base_dir=tmp_path)
+    assert res_shut_verb["codigo_saida"] == -1
+
+    # Salvaguarda: comando_bloqueado continua detectando os padrões destrutivos em si
+    assert comando_bloqueado("format") is not None
+    assert comando_bloqueado("diskpart") is not None
+    assert comando_bloqueado("shutdown") is not None
+
+
+def test_metacaracteres_literais_sem_shell_auditavel(tmp_path):
+    a = tmp_path / "a.txt"
+    a.write_text("conteudo de A\n", encoding="utf-8")
+    b = tmp_path / "b.txt"
+    b.write_text("conteudo intacto de B\n", encoding="utf-8")
+
+    # 1. type a.txt > b.txt não redireciona nem sobrescreve b.txt
+    res_type = executar_comando("type a.txt > b.txt", base_dir=tmp_path)
+    # '>' é tratado como argumento literal; b.txt permanece estritamente intacto
+    assert b.read_text(encoding="utf-8") == "conteudo intacto de B\n"
+
+    # 2. dir & rm -rf / não executa encadeamento de shell
+    res_dir_amp = executar_comando("dir & rm -rf /", base_dir=tmp_path)
+    # Falha na validação de caminhos ou não executa rm
+    assert a.exists()
+    assert b.exists()
+
+    # 3. echo x | shutdown apenas ecoa o texto literal sem executar pipe
+    res_echo_pipe = executar_comando("echo x | shutdown", base_dir=tmp_path)
+    assert res_echo_pipe["codigo_saida"] == 0
+    assert "x | shutdown" in res_echo_pipe["stdout"]
+
+    # 4. dir ; del * não apaga arquivos do diretório
+    res_dir_del = executar_comando("dir ; del *", base_dir=tmp_path)
+    assert a.exists()
+    assert b.exists()
+
+
+def test_metrica_super_redacao_git(tmp_path, capsys):
+    import subprocess
+    from harness.tools import _filtrar_saida_git
+
+    # Caso 1: repositório comum sem arquivos protegidos -> contagem 0
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "audit@example.com"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Audit"], cwd=str(tmp_path), capture_output=True)
+
+    app = tmp_path / "app.py"
+    app.write_text("print('audit')\n", encoding="utf-8")
+    readme = tmp_path / "README.md"
+    readme.write_text("# Readme\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), capture_output=True)
+
+    res_clean = executar_comando("git status", base_dir=tmp_path)
+    assert res_clean["codigo_saida"] == 0
+    assert "linhas_omitidas" not in res_clean
+    assert "omitidas" not in res_clean
+    assert set(res_clean.keys()) == {"stdout", "stderr", "codigo_saida"}
+
+    # Caso 2: arquivo protegido modificado -> contagem sobe no redator
+    env = tmp_path / ".env"
+    env.write_text("SECRETO=123\n", encoding="utf-8")
+
+    saida_bruta, omitidas_direto = _filtrar_saida_git("?? .env\n?? app.py\n")
+    assert omitidas_direto == 1
+    assert ".env" not in saida_bruta
+    assert "app.py" in saida_bruta
+
+    res_env = executar_comando("git status", base_dir=tmp_path)
+    assert res_env["codigo_saida"] == 0
+    assert ".env" not in res_env["stdout"]
+    # Garante que a contagem NÃO é revelada no dicionário do modelo
+    assert "linhas_omitidas" not in res_env
+    assert "omitidas" not in res_env
+    assert set(res_env.keys()) == {"stdout", "stderr", "codigo_saida"}
+
+    # A contagem de auditoria é enviada para stderr (para o desenvolvedor)
+    captured = capsys.readouterr()
+    assert "[AUDITORIA] Redator git" in captured.err
+
 
 
 

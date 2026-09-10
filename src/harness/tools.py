@@ -407,6 +407,12 @@ def obter_env_saneado(chaves_ocultas: Optional[Set[str]] = None) -> Dict[str, st
     return env_copia
 
 
+# NOTA DE SEGURANÇA E ARQUITETURA:
+# Metacaracteres de shell (&, |, >, <, ;, etc.) são tratados estritamente como literais por decisão
+# de design: todos os comandos são executados com shell=False. Como o tokenizador não divide por
+# metacaracteres, sequências como 'dir & rm -rf /' ou 'type a.txt > b.txt' tornam esses símbolos
+# argumentos posicionais (candidatos a caminho), os quais falham categoricamente na validação
+# estrita de caminhos/flags sem disparar subprocessos secundários nem redirecionar I/O.
 def _tokenizar(comando: str) -> List[str]:
     """
     Função pura que divide o comando por espaços respeitando aspas simples e duplas,
@@ -834,31 +840,41 @@ def _linha_toca_protegido_git(linha: str) -> bool:
     return False
 
 
-def _filtrar_saida_git(stdout: str) -> str:
+def _filtrar_saida_git(stdout: str) -> Tuple[str, int]:
     """
     Filtra a saída textual dos subcomandos git permitidos (status, ls-files, log --oneline).
     Omite completamente qualquer linha ou registro NUL-delimitado que mencione arquivos protegidos.
+    Retorna tupla (saida_filtrada, total_linhas_omitidas).
     """
     if not stdout:
-        return stdout
+        return stdout, 0
 
+    omitidas = 0
     # Se a saída contiver registros separados por NUL (\x00), divide por NUL
     if "\x00" in stdout:
         termina_com_nul = stdout.endswith("\x00")
         registros = stdout.split("\x00")
         if termina_com_nul and registros and registros[-1] == "":
             registros.pop()
-        registros_filtrados = [
-            r for r in registros
-            if not _linha_toca_protegido_git(r)
-        ]
+        registros_filtrados = []
+        for r in registros:
+            if _linha_toca_protegido_git(r):
+                omitidas += 1
+            else:
+                registros_filtrados.append(r)
         saida = "\x00".join(registros_filtrados)
         if termina_com_nul and saida:
             saida += "\x00"
-        return saida
+        return saida, omitidas
 
     linhas = stdout.splitlines(keepends=True)
-    return "".join(l for l in linhas if not _linha_toca_protegido_git(l))
+    linhas_filtradas = []
+    for l in linhas:
+        if _linha_toca_protegido_git(l):
+            omitidas += 1
+        else:
+            linhas_filtradas.append(l)
+    return "".join(linhas_filtradas), omitidas
 
 
 def _executar_subprocesso_com_limite(
@@ -972,24 +988,50 @@ def executar_comando(comando: str, base_dir: Optional[Path] = None) -> Dict[str,
     executavel = args[0].lower()
 
     # 3. Defesa em profundidade (camada secundária)
-    # Comandos como echo não usam shell e não executam nada no sistema operacional
-    if executavel != "echo":
-        padrao = comando_bloqueado(comando)
+    # A blocklist de padrões destrutivos (PADROES_BLOQUEADOS) é aplicada apenas aos VERBOS
+    # do comando e aos comandos internos extraídos de wrappers (cmd /c, powershell -c).
+    # Ela NUNCA varre o corpo de argumentos arbitrários de leitura/busca (como findstr ou type),
+    # pois com shell=False nenhum executável permitido executa comandos a partir de argumentos.
+    verbos_a_checar = [executavel]
+    for cmd_w in _desmembrar_wrappers(comando):
+        cmd_w_limpo = cmd_w.strip()
+        if cmd_w_limpo:
+            try:
+                tokens_w = _tokenizar(cmd_w_limpo)
+                if tokens_w:
+                    v = tokens_w[0].lower()
+                    if v not in verbos_a_checar:
+                        verbos_a_checar.append(v)
+            except Exception:
+                partes = cmd_w_limpo.split()
+                if partes:
+                    v = partes[0].strip("\"'").lower()
+                    if v not in verbos_a_checar:
+                        verbos_a_checar.append(v)
+
+    verbos_destrutivos_retaguarda = {
+        "format", "diskpart", "shutdown", "rm", "del", "erase", "rd", "rmdir",
+        "reg", "cipher", "taskkill", "format-volume", "stop-computer", "clear-disk", "remove-item",
+    }
+    for v in verbos_a_checar:
+        padrao = comando_bloqueado(v)
+        if not padrao and v in verbos_destrutivos_retaguarda:
+            padrao = f"\\b{v}\\b"
         if padrao:
             return {
                 "stdout": "",
                 "stderr": f"Comando bloqueado pela política de segurança (padrão: {padrao})",
                 "codigo_saida": -1
             }
-    else:
-        # Para echo, bloqueia se tentar redirecionamento para destino protegido
-        for dest in _destinos_redirecionamento(comando):
-            if _destino_redirecionamento_e_protegido(dest.strip("\"'")):
-                return {
-                    "stdout": "",
-                    "stderr": "Comando bloqueado pela política de segurança (padrão: redirecionamento_destino_protegido)",
-                    "codigo_saida": -1
-                }
+
+    # Bloqueio de redirecionamentos para destino protegido
+    for dest in _destinos_redirecionamento(comando):
+        if _destino_redirecionamento_e_protegido(dest.strip("\"'")):
+            return {
+                "stdout": "",
+                "stderr": "Comando bloqueado pela política de segurança (padrão: redirecionamento_destino_protegido)",
+                "codigo_saida": -1
+            }
 
     # 4. Handlers nativos sem shell para builtins de comando (type, echo, dir)
     if executavel == "type":
@@ -1170,7 +1212,11 @@ def executar_comando(comando: str, base_dir: Optional[Path] = None) -> Dict[str,
             limite_bytes=LIMITE_SUBPROCESSO_BYTES
         )
         if executavel == "git":
-            stdout_final = _filtrar_saida_git(stdout_final)
+            stdout_final, linhas_omitidas = _filtrar_saida_git(stdout_final)
+            if linhas_omitidas > 0:
+                sys.stderr.write(
+                    f"[AUDITORIA] Redator git: {linhas_omitidas} linha(s) protegida(s) omitida(s) da saída.\n"
+                )
 
         return {
             "stdout": stdout_final,
