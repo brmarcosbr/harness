@@ -1,6 +1,8 @@
-# Agent Harness — Agente de Código com Context Caching Medido
+[English](README.md) · [Português (BR)](README.pt-BR.md)
 
-> Loop multi-turno agnóstico de provider, tool use segura e **74,6% a 76,2% de economia de custo via context caching** (benchmark real com Gemini).
+# Agent Harness — Code Agent with Measured Context Caching
+
+> Provider-agnostic multi-turn loop, safe tool use, and **74.6% to 76.2% cost savings via context caching** (real benchmark with Gemini).
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Tests](https://img.shields.io/badge/tests-140%2F140%20passing-brightgreen)
@@ -9,74 +11,74 @@
 ![CI](https://github.com/brmarcosbr/harness/actions/workflows/ci.yml/badge.svg)
 
 
-O **Agent Harness** é uma implementação em Python puro (sem frameworks pesados ou dependências externas em runtime) de um harness para agentes de engenharia de software autônomos. Ele executa loops multi-turno com resolução de ferramentas (*tool calling*), suporta múltiplos provedores (Google Gemini e OpenAI-compatible / DeepSeek) e gerencia o contexto da sessão para viabilizar e mensurar a eficiência de **Context Caching**.
+**Agent Harness** is a pure-Python implementation (no heavy frameworks or external runtime dependencies) of a harness for autonomous software engineering agents. It runs multi-turn loops with tool resolution (*tool calling*), supports multiple providers (Google Gemini and OpenAI-compatible / DeepSeek), and manages the session context to enable and measure the efficiency of **Context Caching**.
 
 ---
 
-## Sumário
+## Contents
 
-- [Destaques](#destaques)
-- [Arquitetura](#arquitetura)
-  - [O Loop de Turnos](#o-loop-de-turnos)
-  - [Gestão de Contexto e Prefix Invariance](#gestão-de-contexto-e-prefix-invariance)
-- [Segurança](#segurança)
-- [Política de Execução de Comandos](#política-de-execução-de-comandos)
-- [Resultados do Benchmark](#resultados-do-benchmark)
-- [Instalação e Configuração](#instalação-e-configuração)
-- [Exemplos de Uso](#exemplos-de-uso)
-  - [Exemplo de Execução Real](#exemplo-de-execução-real)
-- [Executando a Suíte de Testes](#executando-a-suíte-de-testes)
+- [Highlights](#highlights)
+- [Architecture](#architecture)
+  - [The Turn Loop](#the-turn-loop)
+  - [Context Management and Prefix Invariance](#context-management-and-prefix-invariance)
+- [Security](#security)
+- [Command Execution Policy](#command-execution-policy)
+- [Benchmark Results](#benchmark-results)
+- [Installation and Setup](#installation-and-setup)
+- [Usage Examples](#usage-examples)
+  - [Real Execution Example](#real-execution-example)
+- [Running the Test Suite](#running-the-test-suite)
 - [Roadmap](#roadmap)
-- [Licença](#licença)
+- [License](#license)
 
 ---
 
-## Destaques
+## Highlights
 
-- **Zero Dependências Externas em Produção:** Usa estritamente a biblioteca padrão do Python (`urllib`, `json`, `dataclasses`, `subprocess`, `argparse`). O `pytest` é a única dependência de desenvolvimento.
-- **Multi-Provider Neutro:** Protocolo unificado de mensagens e ferramentas, adaptado dinamicamente para o schema nativo do Gemini (incluindo Gemini 3+) ou para o padrão OpenAI / DeepSeek.
-- **Context Caching Mensurado:** Prefixos determinísticos estáveis (*prefix invariance*) permitem que a API Gemini reutilize tokens cacheados a partir do 2º turno, reduzindo custos em mais de 74% (até 76,2% contrafactual).
-- **Poda Ativa de Contexto:** Algoritmo *head-body-tail* que mantém o prefixo cacheável intacto no topo (*head*), descarta turnos intermediários quando o orçamento de tokens estoura (*body*) e preserva os turnos mais recentes (*tail*).
-- **Tools Seguras com Blocklist e Proteção de Caminho:** Comandos de terminal, leitura, escrita e busca de arquivos contam com restrições rígidas contra comandos destrutivos e *path traversal*.
+- **Zero External Dependencies in Production:** Strictly uses the Python standard library (`urllib`, `json`, `dataclasses`, `subprocess`, `argparse`). `pytest` is the only development dependency.
+- **Provider-Neutral:** Unified message and tool protocol, dynamically adapted to Gemini's native schema (including Gemini 3+) or to the OpenAI / DeepSeek standard.
+- **Measured Context Caching:** Stable deterministic prefixes (*prefix invariance*) let the Gemini API reuse cached tokens from the 2nd turn onward, reducing costs by more than 74% (up to 76.2% counterfactual).
+- **Active Context Pruning:** *head-body-tail* algorithm that keeps the cacheable prefix intact at the top (*head*), discards intermediate turns when the token budget overflows (*body*), and preserves the most recent turns (*tail*).
+- **Safe Tools with Blocklist and Path Protection:** Terminal commands, file reading, writing, and search come with strict restrictions against destructive commands and *path traversal*.
 
 ---
 
-## Arquitetura
+## Architecture
 
-### O Loop de Turnos
+### The Turn Loop
 
-A cada turno, o harness envia o histórico estruturado ao modelo. Se o modelo responder requisitando a chamada de ferramentas (*tool calls*), o harness despacha as execuções para o registry de tools, anexa as saídas como mensagens de resposta de ferramenta e aciona o próximo turno. Quando o modelo devolve texto puro, o ciclo é encerrado.
+On each turn, the harness sends the structured history to the model. If the model replies requesting tool calls (*tool calls*), the harness dispatches the executions to the tool registry, appends the outputs as tool response messages, and triggers the next turn. When the model returns plain text, the cycle ends.
 
 ```
                       +-----------------------------+
-                      |   Usuário (Instrução/CLI)   |
+                      |   User (Instruction/CLI)    |
                       +--------------+--------------+
                                      |
                                      v
                        +---------------------------+
-                       | Montagem do Contexto      |
+                       | Context Assembly          |
                        | [Head + Body + Tail]      |
                        +-------------+-------------+
                                      |
                                      v
                        +---------------------------+
-                       | Adaptador de Provedor     |
+                       | Provider Adapter          |
                        | (Gemini / DeepSeek/OpenAI)|
                        +-------------+-------------+
                                      |
                                      v
                              +---------------+
-                             |  Chamada LLM  |
+                             |   LLM Call    |
                              +-------+-------+
                                      |
                    +-----------------+-----------------+
                    |                                   |
-             [Tool Calls]                         [Texto Final]
+             [Tool Calls]                         [Final Text]
                    |                                   |
                    v                                   v
         +----------------------+             +-------------------+
-        | Registry de Tools    |             | Fim da Execução   |
-        | - executar_comando   |             | Resumo de Custos  |
+        | Tool Registry        |             | Execution End     |
+        | - executar_comando   |             | Cost Summary      |
         | - ler_arquivo        |             +-------------------+
         | - escrever_arquivo   |
         | - buscar_no_projeto  |
@@ -84,171 +86,171 @@ A cada turno, o harness envia o histórico estruturado ao modelo. Se o modelo re
                    |
                    v
         +----------------------+
-        | Anexar Resultados    |
-        | Poda se Estourar Lim.|
+        | Append Results       |
+        | Prune if Over Limit  |
         +----------+-----------+
                    |
-                   +----> Próximo Turno (Loop)
+                   +----> Next Turn (Loop)
 ```
 
-### Gestão de Contexto e Prefix Invariance
+### Context Management and Prefix Invariance
 
-Provedores modernos de LLM como a Google Gemini suportam *implicit context caching* automático para prefixos estáticos que superem 4.096 tokens. Para que o cache seja aproveitado, o prefixo inicial da conversa deve ser idêntico em cada turno (*Prefix Invariance*).
+Modern LLM providers such as Google Gemini support automatic *implicit context caching* for static prefixes exceeding 4,096 tokens. For the cache to be used, the conversation's initial prefix must be identical on every turn (*Prefix Invariance*).
 
-O módulo de contexto divide a janela em 3 regiões:
+The context module splits the window into 3 regions:
 
 ```
-+-------------------------------------------------------------------+
-| 1. HEAD (Determinístico & Estável)                                |
-|    - System Prompt                                                |
-|    - Contexto do Repositório (quando fornecido)                   |
-|    * NUNCA contém timestamps, hashes voláteis ou ordem aleatória  |
-|    * Alvo primário de cache hit entre os turnos 2..N              |
-+-------------------------------------------------------------------+
-| 2. BODY (Poda de Histórico)                                       |
-|    - Turnos intermediários de ferramentas e raciocínio            |
-|    - Descartados aos pares (call + resposta) se estourar tokens   |
-+-------------------------------------------------------------------+
-| 3. TAIL (Preservação Local)                                       |
-|    - Últimos turnos mais recentes (garante coerência imediata)    |
-|    - Resposta final do agente                                     |
-+-------------------------------------------------------------------+
++--------------------------------------------------------------------+
+| 1. HEAD (Deterministic & Stable)                                   |
+|    - System Prompt                                                 |
+|    - Repository Context (when provided)                            |
+|    * NEVER contains timestamps, volatile hashes, or random order   |
+|    * Primary cache-hit target across turns 2..N                    |
++--------------------------------------------------------------------+
+| 2. BODY (History Pruning)                                          |
+|    - Intermediate tool-call and reasoning turns                    |
+|    - Dropped in pairs (call + response) if tokens overflow         |
++--------------------------------------------------------------------+
+| 3. TAIL (Local Preservation)                                       |
+|    - Most recent turns (guaranteeing immediate coherence)          |
+|    - Agent's final answer                                          |
++--------------------------------------------------------------------+
 ```
 
-Quando a flag `--no-cache` é fornecida, um cabeçalho dinâmico contendo timestamp (`time.time()`, segundos float) é propositadamente injetado no início da mensagem do usuário, quebrando a invariância do prefixo e forçando *cache miss* a cada turno para fins de comparação.
+When the `--no-cache` flag is provided, a dynamic header containing a timestamp (`time.time()`, float seconds) is deliberately injected at the beginning of the user message, breaking prefix invariance and forcing a *cache miss* on every turn for comparison purposes.
 
 ---
 
-## Segurança
+## Security
 
-O harness disponibiliza 4 ferramentas nativas para o modelo:
+The harness exposes 4 native tools to the model:
 
-1. `executar_comando`: Execução de comandos controlados por whitelist sem shell (`shell=False`) no diretório do projeto, com teto de saída de subprocessos em 1 MB.
-2. `ler_arquivo`: Leitura de arquivos de texto com limite máximo de 200 KB por arquivo.
-3. `escrever_arquivo`: Criação e sobrescrita de arquivos com limite de 1 MB.
-4. `buscar_no_projeto`: Busca por padrão regex no conteúdo dos arquivos de código/texto do projeto (ignora pastas `.venv`, `__pycache__`, `.git`, `.pytest_cache`, `build` e `dist`; permite filtro por extensão opcional; ignora binários e arquivos maiores que 1 MB; limite máximo de 50 resultados; timeout de 10 segundos e proteção ReDoS estendida). **Não** busca por nome de arquivo.
+1. `executar_comando`: Execution of whitelist-controlled commands without a shell (`shell=False`) in the project directory, with a 1 MB cap on subprocess output.
+2. `ler_arquivo`: Reading of text files with a maximum limit of 200 KB per file.
+3. `escrever_arquivo`: Creation and overwriting of files with a 1 MB limit.
+4. `buscar_no_projeto`: Regex pattern search over the contents of the project's code/text files (ignores the `.venv`, `__pycache__`, `.git`, `.pytest_cache`, `build`, and `dist` folders; allows optional filtering by extension; ignores binaries and files larger than 1 MB; maximum of 50 results; 10-second timeout and extended ReDoS protection). It does **not** search by filename.
 
-- **Blocklist de Comandos Críticos:** Bloqueio via regex dos padrões perigosos mapeados em `PADROES_BLOQUEADOS`: `format`, `diskpart`, `shutdown`, `rd /s` (ou `/q`), `rmdir /s` (ou `/q`), `rm -rf`, `reg delete`, `del /s` (ou `/f` ou `/q`), `erase /s` (ou `/f` ou `/q`), `cipher /w` e `taskkill /f /im`.
-- **Caminhos Protegidos Configuráveis (`CAMINHOS_PROTEGIDOS`):** Centralizados em `config.py` e verificados pela função autoritativa `resolver_caminho_seguro`:
-  - `bloqueio_total` (leitura e escrita bloqueadas): `.env` (bloqueando `.env`, `.env.*` e `.env_*`, com exceção segura para templates como `.env.example`, `.env.sample` e `.env.template`) e `.git/` (todos os objetos, configs e referências do repositório);
-  - `somente_escrita` (leitura permitida se necessário, escrita categoricamente bloqueada): `.github/` (protege workflows do GitHub Actions e arquivos de automação contra sobrescrita ou corrupção pelo modelo).
-- **Proteção contra Path Traversal e Symlink Escape:** Validação estrita via `resolver_caminho_seguro` garantindo que nenhum caminho acesse pastas superiores à raiz do projeto (`..` proibido) ou escape da árvore do projeto através de symlinks ou NTFS junctions.
-- **Timeouts e Tetos de Memória Rígidos:** Cada execução de comando possui limite padrão de 30 segundos e leitura em chunks limitada a no máximo 1 MB de saída em subprocessos, prevenindo bloqueios ou estouro de memória por scripts ruidosos. A busca em arquivos é limitada a 10 segundos.
-- **Validação de Kwargs no Loop contra o Schema:** No despacho das ferramentas pelo loop, qualquer argumento não declarado expressamente no schema canônico (`TOOLS`) é sumariamente rejeitado antes da execução, impedindo injeção de parâmetros espúrios (`base_dir`, etc.).
-- **Proteção Multiplataforma via Whitelist:** A execução de processos sem shell (`shell=False`) e restrita à whitelist de binários permitidos impede a execução de comandos destrutivos tanto no Windows (`cmd.exe`) quanto em ambientes POSIX/Linux (`rm -rf`, `mkfs`, etc.). Handlers nativos como `type`, `dir`, `where` e `findstr` contam com emulação transparente em Python para portabilidade integral.
+- **Critical Command Blocklist:** Regex-based blocking of the dangerous patterns mapped in `PADROES_BLOQUEADOS`: `format`, `diskpart`, `shutdown`, `rd /s` (or `/q`), `rmdir /s` (or `/q`), `rm -rf`, `reg delete`, `del /s` (or `/f` or `/q`), `erase /s` (or `/f` or `/q`), `cipher /w`, and `taskkill /f /im`.
+- **Configurable Protected Paths (`CAMINHOS_PROTEGIDOS`):** Centralized in `config.py` and checked by the authoritative function `resolver_caminho_seguro`:
+  - `bloqueio_total` (reading and writing blocked): `.env` (blocking `.env`, `.env.*`, and `.env_*`, with a safe exception for templates such as `.env.example`, `.env.sample`, and `.env.template`) and `.git/` (all repository objects, configs, and references);
+  - `somente_escrita` (reading allowed if needed, writing categorically blocked): `.github/` (protects GitHub Actions workflows and automation files against overwriting or corruption by the model).
+- **Protection against Path Traversal and Symlink Escape:** Strict validation via `resolver_caminho_seguro` ensuring that no path accesses folders above the project root (`..` forbidden) or escapes the project tree through symlinks or NTFS junctions.
+- **Hard Timeouts and Memory Caps:** Each command execution has a default limit of 30 seconds and chunked reading capped at no more than 1 MB of subprocess output, preventing hangs or memory exhaustion caused by noisy scripts. File search is limited to 10 seconds.
+- **Kwargs Validation in the Loop against the Schema:** When the loop dispatches tools, any argument not expressly declared in the canonical schema (`TOOLS`) is summarily rejected before execution, preventing the injection of spurious parameters (`base_dir`, etc.).
+- **Cross-Platform Protection via Whitelist:** Shell-less process execution (`shell=False`) restricted to a whitelist of allowed binaries prevents destructive commands from running on both Windows (`cmd.exe`) and POSIX/Linux environments (`rm -rf`, `mkfs`, etc.). Native handlers such as `type`, `dir`, `where`, and `findstr` have transparent emulation in Python for full portability.
 
-### Limites Conhecidos da Blocklist (Mitigação vs. Sandboxing)
+### Known Limits of the Blocklist (Mitigation vs. Sandboxing)
 
-A combinação de blocklist de comandos, inspeção de redirecionamentos, proteção ReDoS e validação de caminhos protegidos é uma camada de mitigação pragmática (*defense-in-depth*) desenhada para desenvolvimento e testes locais assistidos, **NÃO** um sandbox formal de segurança:
+The combination of command blocklist, redirection inspection, ReDoS protection, and protected-path validation is a pragmatic mitigation layer (*defense-in-depth*) designed for assisted local development and testing, **NOT** a formal security sandbox:
 
-1. **O que a blocklist NÃO protege:**
-   - **Binários arbitrários invocados pelo modelo:** Ferramentas como `curl`, `wget` ou `bitsadmin` baixando scripts ou executáveis externos.
-   - **Execução de código arbitrário em interpretadores:** Comandos como `python -c "..."` ou `powershell` executando payloads arbitrários dinâmicos, ofuscados ou codificados em Base64.
-   - **Scripts complexos e substituições:** Scripts batch ou encadeamentos complexos com expansão atrasada de variáveis de ambiente (`cmd /v:on /c "%VAR%"`).
-2. **Execução não-confiável requer Sandbox Formal:**
-   - Ambientes que executam código arbitrário ou não-confiável exigem isolamento formal em nível de kernel via container (Docker sandbox / gVisor) ou microVM efêmera (Firecracker), conforme previsto no roadmap arquitetural (W7+).
+1. **What the blocklist does NOT protect against:**
+   - **Arbitrary binaries invoked by the model:** Tools such as `curl`, `wget`, or `bitsadmin` downloading external scripts or executables.
+   - **Execution of arbitrary code in interpreters:** Commands such as `python -c "..."` or `powershell` running arbitrary, obfuscated, or Base64-encoded dynamic payloads.
+   - **Complex scripts and substitutions:** Batch scripts or complex chains with delayed expansion of environment variables (`cmd /v:on /c "%VAR%"`).
+2. **Untrusted Execution Requires a Formal Sandbox:**
+   - Environments that execute arbitrary or untrusted code require formal kernel-level isolation via a container (Docker sandbox / gVisor) or an ephemeral microVM (Firecracker), as foreseen in the architectural roadmap (W7+).
 
 > [!WARNING]
-> **Aviso de Segurança (Disclaimer Honesto):**
-> Heurísticas baseadas em blocklist de strings reduzem acidentes, mas **não substituem** um ambiente de isolamento real contra agentes adversariais. Para ambientes de produção abertos a códigos arbitrários, o isolamento em containers (Docker sandbox / gVisor) ou máquinas virtuais efêmeras é o próximo passo obrigatório.
+> **Security Notice (Honest Disclaimer):**
+> String blocklist-based heuristics reduce accidents, but they **do not replace** a real isolation environment against adversarial agents. For production environments open to arbitrary code, isolation in containers (Docker sandbox / gVisor) or ephemeral virtual machines is the mandatory next step.
 
 ---
 
-## Política de Execução de Comandos
+## Command Execution Policy
 
-A partir do Marco W7 (e consolidação W7.7), o harness adota uma **política de execução estrita por whitelist sem shell (`shell=False`)**, eliminando a interpretação gramatical do shell como vetor de ataque e evasão.
+As of Milestone W7 (and the W7.7 consolidation), the harness adopts a **strict whitelist execution policy without a shell (`shell=False`)**, eliminating shell grammar interpretation as an attack and evasion vector.
 
-### Arquitetura em Duas Camadas
+### Two-Layer Architecture
 
-1. **Camada Primária (Whitelist sem Shell):**
-   - **Execução sem Interpretador (`shell=False`):** O harness invoca executáveis externos diretamente via subprocesso sem shell. Não há passagem por `cmd.exe` ou `sh`. Metacaracteres como `|`, `&`, `;`, `>`, `<`, `$VAR` e `%VAR%` não são interpretados pelo sistema operacional, sendo tratados estritamente como argumentos literais ou rejeitados.
-   - **Tokenizador Próprio (`_tokenizar`):** Divide a linha de comando por espaços respeitando aspas simples e duplas (o conteúdo entre aspas torna-se um único token sem as aspas envolventes), rejeitando comandos com aspas desbalanceadas antes de qualquer execução.
-   - **Executáveis Autorizados (`COMANDOS_PERMITIDOS`):**
-     - `dir`: Inspeção de diretórios do projeto (executada nativamente em Python para evitar dependência do shell).
-     - `type`: Leitura rápida de arquivos (executada nativamente com validação de caminhos e bloqueio a arquivos protegidos).
-     - `python`: Execução estrita de scripts Python dentro do projeto (`python <arquivo>.py`). Flags de interpretação inline (`-c`, `-m`, `-i`), referências com `..` e caminhos absolutos são categoricamente bloqueados.
-     - `git`: **Metadados Puros por Allowlist Estrita** (`git status`, `git ls-files` e `git log --oneline`).
-        - Subcomandos que exibem conteúdo ou diffs (`diff`, `show`, `log -p`, etc.) foram completamente eliminados do whitelist.
-        - **Allowlist de Flags:** Para `status`, aceitam-se apenas flags de metadados (`--short`, `-s`, `--porcelain`, `--branch`, `-b`, `--untracked-files`, `-u`, `--ignored`, `--long`), bloqueando `-v`, `-vv`, `--verbose`, `-z`, `--null`. Para `ls-files`, aceitam-se apenas metadados (`--cached`, `-c`, `--others`, `-o`, `--stage`, `-s`, `-t`, `--full-name`, `--exclude-standard`, etc.). Para `log`, exige-se `--oneline` e aceitam-se `--stat`, `-n <N>`, `-n<N>`, `--max-count=<N>` e caminhos seguros.
-        - **Pathspec Magic:** Qualquer argumento com prefixo `:` (ex.: `:(top).env`) é categoricamente rejeitado para impedir evasão de filtros de caminho.
-        - **Redator Fail-Safe com Suporte a NUL:** Saídas são inspecionadas por linha e por registros NUL (`\x00`). Linhas ou registros que citem arquivos protegidos (incluindo padrões de renomeação `{old => new}`) são sumariamente omitidos.
-         - **Trade-off de Super-Redação e Métrica de Auditoria:** Mensagens de commit que citem arquivos protegidos (ex.: `add .env`) fazem a linha inteira correspondente de `git log --oneline` ser omitida da resposta ao modelo. O redator contabiliza o total de linhas/registros omitidos e emite um log de auditoria em `stderr` para o desenvolvedor, sem expor métricas ao modelo para evitar inferência sobre a existência de arquivos protegidos.
-      - `findstr`: Busca textual rápida (com fallback transparente em plataformas não-Windows, atuando como busca por substring direta em arquivos sem suporte a flags avançadas do findstr nativo do Windows).
-      - `where`: Localização de executáveis seguros no PATH (com fallback cross-platform via `shutil.which`, tratando automaticamente o mapeamento de `python` para `python3` caso necessário).
-      - `echo`: Impressão de texto no terminal (sem permitir redirecionamento via shell).
-    - Qualquer binário fora da whitelist (ex: `rm`, `del`, `curl`, `powershell`, `cmd`, `bash`, `sh`, `nc`) é bloqueado imediatamente com código de saída `-1` e mensagem explicativa.
+1. **Primary Layer (Shell-less Whitelist):**
+   - **Execution without an Interpreter (`shell=False`):** The harness invokes external executables directly via subprocess without a shell. There is no pass through `cmd.exe` or `sh`. Metacharacters such as `|`, `&`, `;`, `>`, `<`, `$VAR`, and `%VAR%` are not interpreted by the operating system, being treated strictly as literal arguments or rejected.
+   - **Own Tokenizer (`_tokenizar`):** Splits the command line by spaces while respecting single and double quotes (the content between quotes becomes a single token without the surrounding quotes), rejecting commands with unbalanced quotes before any execution.
+   - **Authorized Executables (`COMANDOS_PERMITIDOS`):**
+     - `dir`: Inspection of project directories (executed natively in Python to avoid depending on the shell).
+     - `type`: Quick reading of files (executed natively with path validation and blocking of protected files).
+     - `python`: Strict execution of Python scripts inside the project (`python <file>.py`). Inline interpreter flags (`-c`, `-m`, `-i`), references with `..`, and absolute paths are categorically blocked.
+     - `git`: **Pure Metadata via Strict Allowlist** (`git status`, `git ls-files`, and `git log --oneline`).
+        - Subcommands that display content or diffs (`diff`, `show`, `log -p`, etc.) were completely removed from the whitelist.
+        - **Flag Allowlist:** For `status`, only metadata flags are accepted (`--short`, `-s`, `--porcelain`, `--branch`, `-b`, `--untracked-files`, `-u`, `--ignored`, `--long`), blocking `-v`, `-vv`, `--verbose`, `-z`, `--null`. For `ls-files`, only metadata is accepted (`--cached`, `-c`, `--others`, `-o`, `--stage`, `-s`, `-t`, `--full-name`, `--exclude-standard`, etc.). For `log`, `--oneline` is required and `--stat`, `-n <N>`, `-n<N>`, `--max-count=<N>`, and safe paths are accepted.
+        - **Pathspec Magic:** Any argument with a `:` prefix (e.g., `:(top).env`) is categorically rejected to prevent evasion of path filters.
+        - **Fail-Safe Redactor with NUL Support:** Outputs are inspected line by line and by NUL records (`\x00`). Lines or records that cite protected files (including rename patterns `{old => new}`) are summarily omitted.
+         - **Over-Redaction Trade-off and Audit Metric:** Commit messages that cite protected files (e.g., `add .env`) cause the entire corresponding line of `git log --oneline` to be omitted from the response to the model. The redactor counts the total number of omitted lines/records and emits an audit log to `stderr` for the developer, without exposing metrics to the model, in order to avoid inference about the existence of protected files.
+      - `findstr`: Fast text search (with transparent fallback on non-Windows platforms, acting as a direct substring search in files without support for advanced flags of Windows' native findstr).
+      - `where`: Location of safe executables in PATH (with a cross-platform fallback via `shutil.which`, automatically handling the mapping of `python` to `python3` when necessary).
+      - `echo`: Printing text to the terminal (without allowing redirection via the shell).
+    - Any binary outside the whitelist (e.g., `rm`, `del`, `curl`, `powershell`, `cmd`, `bash`, `sh`, `nc`) is blocked immediately with exit code `-1` and an explanatory message.
 
-2. **Camada Secundária (Blocklist de Verbos e Proteção de Redirecionamentos — Defesa em Profundidade):**
-   - **Aplicação Exclusiva no Verbo (Eliminação de Falsos Positivos em Leitura):** A blocklist de padrões destrutivos (`PADROES_BLOQUEADOS`) é avaliada exclusivamente contra o **verbo** do comando (e comandos internos de wrappers `cmd /c` ou `powershell -c`), nunca sobre o corpo dos argumentos. Evidência: buscas legítimas como `findstr "rm -rf" DOC.md` ou `findstr shutdown DOC.md` eram indevidamente recusadas (`rc=-1`), enquanto `findstr "format C:"` passava. Com a execução sem shell (`shell=False`), binários de leitura autorizados não executam comandos embutidos em texto, tornando seguro e necessário restringir a blocklist ao verbo executado.
-   - Como salvaguarda adicional de retaguarda, verbos destrutivos (`format`, `diskpart`, `shutdown`, `rm`, `del`, etc.) e redirecionamentos para arquivos protegidos (`.env`, `.git/`, `.github/`) são interceptados categoricamente.
+2. **Secondary Layer (Verb Blocklist and Redirection Protection — Defense in Depth):**
+   - **Exclusive Application on the Verb (Elimination of False Positives in Reading):** The destructive pattern blocklist (`PADROES_BLOQUEADOS`) is evaluated exclusively against the **verb** of the command (and the internal commands of `cmd /c` or `powershell -c` wrappers), never over the body of the arguments. Evidence: legitimate searches such as `findstr "rm -rf" DOC.md` or `findstr shutdown DOC.md` were unduly refused (`rc=-1`), while `findstr "format C:"` passed. With shell-less execution (`shell=False`), authorized reading binaries do not execute commands embedded in text, which makes it safe and necessary to restrict the blocklist to the executed verb.
+   - As an additional backstop safeguard, destructive verbs (`format`, `diskpart`, `shutdown`, `rm`, `del`, etc.) and redirections to protected files (`.env`, `.git/`, `.github/`) are categorically intercepted.
 
-### Por que Whitelist sem Shell e Não Blocklist?
+### Why a Shell-less Whitelist and Not a Blocklist?
 
-A migração da abordagem de blocklist pura para a whitelist sem shell foi impulsionada por **evidências empíricas obtidas ao longo de 3 rodadas de code review multi-modelo (v1, v2, v3)**, nas quais foram analisados **6 vetores de evasão** contra a execução baseada em blocklist com `shell=True` (5 reproduzidos nas auditorias e 1 identificado na análise arquitetural):
+The migration from the pure blocklist approach to the shell-less whitelist was driven by **empirical evidence obtained over 3 rounds of multi-model code review (v1, v2, v3)**, in which **6 evasion vectors** against blocklist-based execution with `shell=True` were analyzed (5 reproduced in the audits and 1 identified in the architectural analysis):
 
-1. **Encadeamento de Comandos via `&` ou `&&`:** Comandos permitidos mascarando instruções subsequentes perigosas (ex: `dir & type .env`).
-2. **Redirecionamentos de Saída para Arquivos Críticos:** Uso de operadores de fluxo (`echo x > .env` ou `type a > b && echo x >> .git/config`) para corromper credenciais ou histórico git.
-3. **Wrappers de Interpretador:** Invocação através de interpretadores secundários (ex: `cmd /c "type .env"` ou `powershell -c "Get-Content .env"`), contornando checagens léxicas simples.
-4. **Redirecionamento com Descritores Numéricos:** Uso de descritores de fluxo (`echo x 1> .env` ou `echo x 2>> .env`) que escapavam de regexes padrão de redirecionamento.
-5. **Escape por Aspas e Espaços:** Variações com aspas aninhadas e caminhos relativos ofuscados que o interpretador do shell decodificava em runtime.
-6. **Execução de Código Inline via Flags (identificado na análise arquitetural):** Uso de `python -c "import os; os.system('...')"` para rodar código arbitrário sem disparar as palavras-chave do shell.
+1. **Command Chaining via `&` or `&&`:** Allowed commands masking subsequent dangerous instructions (e.g., `dir & type .env`).
+2. **Output Redirections to Critical Files:** Use of stream operators (`echo x > .env` or `type a > b && echo x >> .git/config`) to corrupt credentials or git history.
+3. **Interpreter Wrappers:** Invocation through secondary interpreters (e.g., `cmd /c "type .env"` or `powershell -c "Get-Content .env"`), bypassing simple lexical checks.
+4. **Redirection with Numeric Descriptors:** Use of stream descriptors (`echo x 1> .env` or `echo x 2>> .env`) that escaped standard redirection regexes.
+5. **Escaping via Quotes and Spaces:** Variations with nested quotes and obfuscated relative paths that the shell interpreter decoded at runtime.
+6. **Inline Code Execution via Flags (identified in the architectural analysis):** Use of `python -c "import os; os.system('...')"` to run arbitrary code without triggering shell keywords.
 
-Esses testes demonstraram que **nenhuma blocklist baseada em expressões regulares é capaz de cobrir exaustivamente a gramática recursiva de um shell (`cmd.exe` ou `sh`)**. Desativar o shell (`shell=False`) e limitar a execução a uma whitelist rigorosa com validação semântica de argumentos elimina toda essa classe de ataques por definição arquitetural.
+These tests demonstrated that **no regular-expression-based blocklist is capable of exhaustively covering the recursive grammar of a shell (`cmd.exe` or `sh`)**. Disabling the shell (`shell=False`) and limiting execution to a rigorous whitelist with semantic validation of arguments eliminates this entire class of attacks by architectural definition.
 
-### Limites Residuais
+### Residual Limits
 
-- **Execução de Scripts Python Locais:** O agente tem permissão para rodar `python <arquivo>.py` para executar seus próprios testes. Um script gerado pelo modelo com comportamento malicioso pode ainda ser executado caso seja gravado no projeto.
-- **Necessidade de Sandbox para Autonomia Irrestrita:** Para ambientes abertos a tarefas arbitrárias e não supervisionadas, o isolamento em nível de container (Docker sandbox / gVisor) ou microVM efêmera (Firecracker) permanece como o padrão definitivo de contenção (W8+).
+- **Execution of Local Python Scripts:** The agent is allowed to run `python <file>.py` to execute its own tests. A script generated by the model with malicious behavior can still be executed if it is written into the project.
+- **Need for a Sandbox for Unrestricted Autonomy:** For environments open to arbitrary and unsupervised tasks, container-level isolation (Docker sandbox / gVisor) or an ephemeral microVM (Firecracker) remains the definitive containment standard (W8+).
 
 ---
 
-## Resultados do Benchmark
+## Benchmark Results
 
-O benchmark automatizado (`python -m harness --bench`) executa 3 tarefas reais de engenharia de software contra o repositório, comparando o modo com **Cache Habilitado** (*prefixo invariante*) versus **Cache Desabilitado** (*prefixo quebrado intencionalmente a cada turno*).
+The automated benchmark (`python -m harness --bench`) runs 3 real software engineering tasks against the repository, comparing **Cache Enabled** mode (*invariant prefix*) versus **Cache Disabled** mode (*prefix intentionally broken on every turn*).
 
-Resultados medidos no modelo `gemini-3.8-flash` com o contexto do repositório (~26.000 tokens):
+Results measured on the `gemini-3.8-flash` model with the repository context (~26,000 tokens):
 
-| Tarefa | Modo | Turnos | Prompt Tokens | Cached Tokens | Custo (USD) | Economia | Sucesso |
+| Task | Mode | Turns | Prompt Tokens | Cached Tokens | Cost (USD) | Savings | Success |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **T1: Mapa de Módulos** | ON | 5 | 184.217 | 130.804 | $0.052799 | 62,6% | SIM |
-| *(criar bench_mapa.md com módulos de src/harness)* | OFF | 4 | 146.818 | 0 | $0.112510 | 0,0% | SIM |
-| **T2: Geração + Teste Próprio** | ON | 5 | 176.620 | 163.510 | $0.022876 | 82,8% | SIM |
-| *(criar bench_math.py + bench_test_math.py e rodar)* | OFF | 5 | 176.743 | 0 | $0.133562 | 0,0% | SIM |
-| **T3: Spec + Teste Próprio** | ON | 6 | 211.947 | 196.185 | $0.027912 | 82,6% | SIM |
-| *(criar bench_contador.py + bench_test_contador.py e rodar)* | OFF | 6 | 212.945 | 0 | $0.161520 | 0,0% | SIM |
-| **TOTAL CACHE ON** | **ON** | **16** | **572.784** | **490.499** | **$0.103586** | **76,2%*** | **3/3** |
-| **TOTAL CACHE OFF** | **OFF** | **15** | **536.506** | **0** | **$0.407592** | **0,0%** | **3/3** |
+| **T1: Module Map** | ON | 5 | 184,217 | 130,804 | $0.052799 | 62.6% | YES |
+| *(create bench_mapa.md with the modules of src/harness)* | OFF | 4 | 146,818 | 0 | $0.112510 | 0.0% | YES |
+| **T2: Generation + Own Test** | ON | 5 | 176,620 | 163,510 | $0.022876 | 82.8% | YES |
+| *(create bench_math.py + bench_test_math.py and run them)* | OFF | 5 | 176,743 | 0 | $0.133562 | 0.0% | YES |
+| **T3: Spec + Own Test** | ON | 6 | 211,947 | 196,185 | $0.027912 | 82.6% | YES |
+| *(create bench_contador.py + bench_test_contador.py and run them)* | OFF | 6 | 212,945 | 0 | $0.161520 | 0.0% | YES |
+| **TOTAL CACHE ON** | **ON** | **16** | **572,784** | **490,499** | **$0.103586** | **76.2%*** | **3/3** |
+| **TOTAL CACHE OFF** | **OFF** | **15** | **536,506** | **0** | **$0.407592** | **0.0%** | **3/3** |
 
-### Metodologia e Transparência
+### Methodology and Transparency
 
-- **Tarefas Avaliadas:**
-  - **T1 (mapa):** Criar `bench_mapa.md` listando cada módulo de `src/harness` com uma frase sobre sua responsabilidade, baseando-se no contexto do repositório e sem alterar arquivos existentes.
-  - **T2 (geracao-com-teste):** Criar `bench_math.py` com função `soma(a, b)` e `bench_test_math.py` com validação de saída não-zero em caso de erro, e executar `python bench_test_math.py`.
-  - **T3 (spec-de-arquivo):** Criar `bench_contador.py` com função `contar_palavras(t)` e `bench_test_contador.py` com casos de teste específicos, e executar `python bench_test_contador.py`.
-- O modelo decide autonomamente a quantidade de turnos para cada tarefa (por exemplo, na T1 o modelo utilizou 5 turnos com cache e 4 turnos sem cache, explorando arquivos de forma independente).
-- **Alternância de Ordem de Execução (Mitigação de Viés):** Para evitar que a ordem fixa (ON sempre antes de OFF) introduza viés de aquecimento de cache ou vantagens de latência no servidor do provedor, o benchmark alterna a ordem de execução a cada tarefa: T1 roda ON -> OFF, T2 roda OFF -> ON, e T3 roda ON -> OFF.
-- **As Duas Bases de Cálculo de Economia (Transparência Total):**
-  1. **74,6% — Comparação Direta entre Execuções Distintas:** O custo real da suíte completa com Cache OFF foi de **$0.407592** (15 turnos), enquanto com Cache ON foi de **$0.103586** (16 turnos). A razão direta `($0.407592 - $0.103586) / $0.407592` resulta em **74,6% de economia real**, mesmo com o agente executando 1 turno a mais na rodada com cache.
-  2. **76,2% — Economia Contrafactual Turno a Turno (*):** O valor reportado na tabela de benchmark (`$0.331087 / 76,2%`) é a soma contrafactual calculada pelo harness sobre a exata execução com Cache ON: o que aqueles 16 turnos específicos teriam custado caso nenhum token tivesse sido servido pelo cache ($0.434673 contrafactual) versus o que de fato custaram com o desconto de cache ($0.103586 real).
-- O cache só passa a atuar a partir do 2º turno de cada tarefa, quando o prefixo inicial da conversa já foi ingerido e reconhecido pelo provedor.
+- **Tasks Evaluated:**
+  - **T1 (map):** Create `bench_mapa.md` listing each module of `src/harness` with one sentence about its responsibility, based on the repository context and without changing existing files.
+  - **T2 (generation-with-test):** Create `bench_math.py` with a `soma(a, b)` function and `bench_test_math.py` with non-zero output validation in case of error, and run `python bench_test_math.py`.
+  - **T3 (file-spec):** Create `bench_contador.py` with a `contar_palavras(t)` function and `bench_test_contador.py` with specific test cases, and run `python bench_test_contador.py`.
+- The model autonomously decides the number of turns for each task (for example, in T1 the model used 5 turns with cache and 4 turns without cache, exploring files independently).
+- **Alternating Execution Order (Bias Mitigation):** To prevent the fixed order (ON always before OFF) from introducing cache warm-up bias or latency advantages on the provider's server, the benchmark alternates the execution order on each task: T1 runs ON -> OFF, T2 runs OFF -> ON, and T3 runs ON -> OFF.
+- **The Two Bases for Calculating Savings (Full Transparency):**
+  1. **74.6% — Direct Comparison between Distinct Runs:** The real cost of the complete suite with Cache OFF was **$0.407592** (15 turns), while with Cache ON it was **$0.103586** (16 turns). The direct ratio `($0.407592 - $0.103586) / $0.407592` results in **74.6% real savings**, even with the agent running 1 extra turn in the cached round.
+  2. **76.2% — Turn-by-Turn Counterfactual Savings (*):** The value reported in the benchmark table (`$0.331087 / 76.2%`) is the counterfactual sum calculated by the harness over the exact Cache ON run: what those 16 specific turns would have cost if no token had been served from cache ($0.434673 counterfactual) versus what they actually cost with the cache discount ($0.103586 real).
+- The cache only starts acting from the 2nd turn of each task, when the conversation's initial prefix has already been ingested and recognized by the provider.
 
 ---
 
-## Instalação e Configuração
+## Installation and Setup
 
-### Pré-requisitos
+### Prerequisites
 
-- Python 3.10 ou superior (testado até Python 3.14).
-- Chave de API do Google Gemini (`GEMINI_API_KEY`) e/ou DeepSeek (`DEEPSEEK_API_KEY`).
+- Python 3.10 or higher (tested up to Python 3.14).
+- Google Gemini API key (`GEMINI_API_KEY`) and/or DeepSeek (`DEEPSEEK_API_KEY`).
 
-### Instalação
+### Installation
 
 ```bash
-# Clone o repositório
+# Clone the repository
 git clone https://github.com/brmarcosbr/harness.git
 cd harness
 
-# Crie e ative o ambiente virtual
+# Create and activate the virtual environment
 python -m venv .venv
 
 # Windows (PowerShell)
@@ -256,19 +258,19 @@ python -m venv .venv
 # Linux / macOS
 source .venv/bin/activate
 
-# Instale o pacote local em modo editável com dependências de desenvolvimento
+# Install the local package in editable mode with dev dependencies
 pip install -e .[dev]
 ```
 
-### Configuração de Ambiente
+### Environment Configuration
 
-Crie o arquivo `.env` na raiz do projeto:
+Create the `.env` file at the project root:
 
 ```bash
 cp .env.example .env
 ```
 
-Edite o `.env` com suas credenciais:
+Edit the `.env` with your credentials:
 
 ```ini
 GEMINI_API_KEY=sua_chave_gemini_aqui
@@ -278,33 +280,33 @@ HARNESS_PROVIDER=gemini
 
 ---
 
-## Exemplos de Uso
+## Usage Examples
 
-### 1. Tarefa Básica no Terminal
+### 1. Basic Task in the Terminal
 
 ```bash
 python -m harness --tarefa "liste os arquivos desta pasta"
 ```
 
-### 2. Tarefa com Contexto Completo do Repositório (Context Caching Ativo)
+### 2. Task with Full Repository Context (Context Caching Active)
 
 ```bash
 python -m harness --provider gemini --contexto-repo --tarefa "Analise a arquitetura de providers e sugira um novo adaptador"
 ```
 
-### 3. Comparação com Cache Desabilitado
+### 3. Comparison with Cache Disabled
 
 ```bash
-python -m harness --provider gemini --contexto-repo --no-cache --tarefa "Faça a mesma análise"
+python -m harness --provider gemini --contexto-repo --no-cache --tarefa "Run the same analysis"
 ```
 
-### 4. Execução com Provedor DeepSeek
+### 4. Run with the DeepSeek Provider
 
 ```bash
-python -m harness --provider deepseek --tarefa "Escreva uma função que calcula a sequência de Fibonacci"
+python -m harness --provider deepseek --tarefa "Write a function that computes the Fibonacci sequence"
 ```
 
-### 5. Execução do Benchmark Automatizado
+### 5. Running the Automated Benchmark
 
 ```bash
 python -m harness --bench
@@ -312,9 +314,9 @@ python -m harness --bench
 
 ---
 
-### Exemplo de Execução Real
+### Real Execution Example
 
-Abaixo, a transcrição da saída real de uma execução simples com o modelo `gemini-3.8-flash`:
+Below is the transcript of the real output of a simple run with the `gemini-3.8-flash` model:
 
 ```text
 ============================================================
@@ -383,52 +385,52 @@ Modelo final: gemini-3.8-flash
 ============================================================
 ```
 
-*(Nota: Nesta tarefa curta de 3 turnos, o prefixo continha apenas o system prompt com 640 tokens, abaixo do limiar de 4.096 tokens para ativação do cache implícito do Gemini. O totalTokenCount reportado pela API da Gemini pode incluir tokens de thinking/raciocínio interno em modelos que suportam pensamento nativo. Ao fornecer `--contexto-repo`, o head atinge ~26k tokens e a economia atinge 76,2%, como demonstrado no benchmark).*
+*(Note: In this short 3-turn task, the prefix contained only the system prompt with 640 tokens, below the 4,096-token threshold for activating Gemini's implicit cache. The totalTokenCount reported by the Gemini API may include thinking/internal reasoning tokens in models that support native thinking. When providing `--contexto-repo`, the head reaches ~26k tokens and the savings reach 76.2%, as demonstrated in the benchmark).*
 
 ---
 
-## Executando a Suíte de Testes
+## Running the Test Suite
 
-Os 140 testes unitários são executados 100% offline (utilizam mocks e providers fakes, sem dependência de rede ou consumo de cotas de API):
+The 140 unit tests run 100% offline (they use mocks and fake providers, with no network dependency or API quota consumption):
 
 ```bash
 pytest tests/ -q
 ```
 
-Saída esperada:
+Expected output:
 
 ```text
 ............................................................................................................................................  [100%]
 140 passed in 2.75s
 ```
 
-Os testes cobrem:
-- Cálculo e precisão de preços (Gemini e DeepSeek com janelas de cache, data de conferência e overrides por ambiente `PRECO_*`).
-- Resolução e validação de segurança de ferramentas (whitelist sem shell, blocklist estrita em verbos, timeouts, path traversal).
-- Garantia auditável de metacaracteres como literais (`dir & rm -rf /`, `type a.txt > b.txt` sem sobrescrita).
-- Validação estrita de argumentos git, python, findstr, where e proteção contra symlink/junction traversal em todas as superfícies.
-- Métrica de auditoria de super-redação do git com notificação em `stderr` (sem vazamento para o modelo).
-- Visibilidade com aviso em `stderr` quando acionado o fallback posicional de tools no loop.
-- Saneamento de credenciais do ambiente contra vazamento em subprocessos (por segmento/posição de token).
-- Inversão de camadas de execução com validação primária de whitelist sem falsos positivos em comandos seguros (`echo format`, `findstr "rm -rf"`).
-- Serialização e conversão de schemas nos formatos Gemini e OpenAI.
-- Normalização e parsing de respostas multi-turnos com tool calling.
-- Poda de contexto e garantia de prefix invariance.
-- Execução do loop principal e suíte de benchmark.
+The tests cover:
+- Price calculation and accuracy (Gemini and DeepSeek with cache windows, verification date, and `PRECO_*` environment overrides).
+- Tool security resolution and validation (shell-less whitelist, strict verb blocklist, timeouts, path traversal).
+- Auditable guarantee that metacharacters are literals (`dir & rm -rf /`, `type a.txt > b.txt` without overwriting).
+- Strict validation of git, python, findstr, and where arguments, and protection against symlink/junction traversal on all surfaces.
+- Audit metric for git over-redaction with notification on `stderr` (without leaking to the model).
+- Visibility with a warning on `stderr` when the positional tool fallback in the loop is triggered.
+- Sanitization of environment credentials against leaking into subprocesses (by token segment/position).
+- Inversion of execution layers with primary whitelist validation without false positives on safe commands (`echo format`, `findstr "rm -rf"`).
+- Serialization and conversion of schemas in the Gemini and OpenAI formats.
+- Normalization and parsing of multi-turn responses with tool calling.
+- Context pruning and prefix invariance guarantee.
+- Main loop execution and benchmark suite.
 
 ---
 
 ## Roadmap
 
-- [ ] **Sandboxing com Docker:** Executar ferramentas em containers efêmeros e isolados.
-- [ ] **Suporte a Streaming:** Resposta de texto em tempo real via SSE/WebSockets.
-- [ ] **Sumarização com LLM:** Resumir blocos de histórico podados em vez de apenas descartá-los.
-- [ ] **Extensão Multi-Agente:** Orquestração de sub-agentes com especialidades distintas (pesquisa, codificação e revisão).
+- [ ] **Docker Sandboxing:** Run tools in ephemeral, isolated containers.
+- [ ] **Streaming Support:** Real-time text response via SSE/WebSockets.
+- [ ] **LLM Summarization:** Summarize pruned history blocks instead of merely discarding them.
+- [ ] **Multi-Agent Extension:** Orchestration of sub-agents with distinct specialties (research, coding, and review).
 
 ---
 
-## Licença
+## License
 
-Distribuído sob a licença MIT. Consulte [LICENSE](LICENSE) para mais informações.
+Distributed under the MIT license. See [LICENSE](LICENSE) for more information.
 
-Autor: **Bruno Marcos Bonifacio**
+Author: **Bruno Marcos Bonifacio**
