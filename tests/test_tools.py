@@ -1211,8 +1211,12 @@ def test_readme_contagem_testes_sincronizada():
     import re
     from pathlib import Path
     raiz = Path(__file__).parent.parent
-    tests_dir = raiz / "tests"
     readme_path = raiz / "README.md"
+    if not readme_path.exists():
+        import pytest
+        pytest.skip("README.md não encontrado no ambiente/pacote de execução")
+
+    tests_dir = raiz / "tests"
 
     # Conta todas as funções test_* nos arquivos test_*.py
     total_testes = sum(
@@ -1459,6 +1463,63 @@ def test_git_redacao_metadados_resumo_e_diff_cc(tmp_path):
     )
     saida_cc_s = _filtrar_saida_git(diff_cc_seguro)
     assert "+print('resolvido')" in saida_cc_s
+
+
+def test_findstr_flags_compostas_e_flag_c(tmp_path):
+    (tmp_path / "texto.txt").write_text("linha teste de busca\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("SECRET=123\n", encoding="utf-8")
+
+    # Flags compostas bloqueadas: /si, /is, /fs:, /d:
+    res1 = executar_comando("findstr /si busca texto.txt", base_dir=tmp_path)
+    assert res1["codigo_saida"] == -1
+    assert "Flag perigosa não permitida" in res1["stderr"]
+
+    res2 = executar_comando("findstr /is busca texto.txt", base_dir=tmp_path)
+    assert res2["codigo_saida"] == -1
+    assert "Flag perigosa não permitida" in res2["stderr"]
+
+    res3 = executar_comando("findstr /fs:lista.txt busca texto.txt", base_dir=tmp_path)
+    assert res3["codigo_saida"] == -1
+    assert "Flag perigosa não permitida" in res3["stderr"]
+
+    res4 = executar_comando("findstr /d:pasta busca texto.txt", base_dir=tmp_path)
+    assert res4["codigo_saida"] == -1
+    assert "Flag perigosa não permitida" in res4["stderr"]
+
+    # Flag /c: com texto permitido
+    res5 = executar_comando("findstr /c:teste texto.txt", base_dir=tmp_path)
+    assert res5["codigo_saida"] == 0
+    assert "linha teste de busca" in res5["stdout"]
+
+    # Flag /c: sem arquivo alvo -> erro de argumento
+    res6 = executar_comando("findstr /c:teste", base_dir=tmp_path)
+    assert res6["codigo_saida"] == -1
+    assert "requer ao menos um arquivo alvo" in res6["stderr"]
+
+    # Flag /c: visando arquivo protegido -> bloqueado
+    res7 = executar_comando("findstr /c:teste .env", base_dir=tmp_path)
+    assert res7["codigo_saida"] == -1
+    assert "protegido" in res7["stderr"]
+
+
+def test_desescapar_caminho_git_octal_e_aspas():
+    from harness.tools import _desescapar_caminho_git, caminho_protegido
+
+    # 1. Octal UTF-8 com aspas em pasta contendo .env
+    c1 = _desescapar_caminho_git(r'"a/pasta_\303\241/.env"')
+    assert c1 == "pasta_á/.env"
+    assert caminho_protegido(c1) is True
+
+    # 2. Octal UTF-8 sem aspas (já limpo por regex)
+    c2 = _desescapar_caminho_git(r'a/pasta_\303\241/.env')
+    assert c2 == "pasta_á/.env"
+    assert caminho_protegido(c2) is True
+
+    # 3. Aspas internas escapadas
+    c3 = _desescapar_caminho_git(r'"a/sub/\"minha_pasta\"/.env"')
+    assert c3 == 'sub/"minha_pasta"/.env'
+    assert caminho_protegido(c3) is True
+
 
 
 

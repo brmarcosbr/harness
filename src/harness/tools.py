@@ -691,24 +691,33 @@ def validar_comando_whitelist(
                     return f"Flag perigosa não permitida no where: '{a}'."
 
         if executavel == "findstr":
-            flags_findstr_bloqueadas = ("/g", "-g", "/d", "-d", "/s", "-s", "/f", "-f")
+            tem_flag_c = False
             for a in args[1:]:
                 a_lower = a.lower()
-                if (
-                    a_lower in flags_findstr_bloqueadas
-                    or any(a_lower.startswith(f"{f}:") for f in flags_findstr_bloqueadas)
-                ):
-                    return f"Flag perigosa não permitida no findstr: '{a}'."
+                if a_lower.startswith(("/c:", "-c:")):
+                    tem_flag_c = True
+                    continue
+
+                # Bloqueia flags perigosas: qualquer flag contendo 's', 'd', 'g' ou 'f'
+                # cobre /s, -s, /si, /is, /fs:, /ds:, /g:, /d:, etc.
+                if a_lower.startswith(("/", "-")):
+                    flag_corpo = a_lower[1:]
+                    if any(c in flag_corpo for c in ("s", "d", "g", "f")):
+                        return f"Flag perigosa não permitida no findstr: '{a}'."
 
             nao_flags = [a for a in args[1:] if not a.startswith(("/", "-"))]
-            if len(nao_flags) < 2:
-                return "Comando findstr requer padrão de busca e ao menos um arquivo alvo: 'findstr <padrão> <arquivo>'."
+            if tem_flag_c:
+                if len(nao_flags) < 1:
+                    return "Comando findstr com /c requer ao menos um arquivo alvo: 'findstr /c:<padrão> <arquivo>'."
+                caminhos_para_validar = nao_flags
+            else:
+                if len(nao_flags) < 2:
+                    return "Comando findstr requer padrão de busca e ao menos um arquivo alvo: 'findstr <padrão> <arquivo>'."
+                caminhos_para_validar = nao_flags[1:]
 
-            for a in nao_flags[1:]:
+            for a in caminhos_para_validar:
                 if "*" in a or "?" in a:
                     return f"Curingas (* e ?) não são permitidos em alvos do findstr: '{a}'."
-
-            caminhos_para_validar = nao_flags[1:]
         else:
             caminhos_para_validar = [a for a in args[1:] if not a.startswith(("/", "-"))]
 
@@ -734,14 +743,19 @@ def _desescapar_caminho_git(p: str) -> str:
     """
     Remove aspas e desescapa sequências de escape do Git em caminhos citados.
     Remove prefixos clássicos (a/, b/, i/, w/) se presentes.
+    Decodifica escapes octais e caracteres escapados do Git (latin-1 para utf-8).
     """
     p = p.strip()
     if p.startswith('"') and p.endswith('"') and len(p) >= 2:
+        p = p[1:-1]
+
+    if "\\" in p:
         try:
             import codecs
-            p = codecs.escape_decode(p[1:-1].encode("utf-8"))[0].decode("utf-8", errors="replace")
+            b = codecs.escape_decode(p.encode("latin-1", errors="replace"))[0]
+            p = b.decode("utf-8", errors="replace")
         except Exception:
-            p = p[1:-1]
+            pass
 
     # Trata prefixos como a/, b/, i/, w/
     if len(p) >= 2 and p[0] in ("a", "b", "i", "w") and p[1] == "/":
@@ -1062,12 +1076,22 @@ def executar_comando(comando: str, base_dir: Optional[Path] = None) -> Dict[str,
         return {"stdout": "", "stderr": "INFO: Could not find files for the given pattern(s).\n", "codigo_saida": 1}
 
     if executavel == "findstr" and not shutil.which("findstr"):
-        nao_flags = [a for a in args[1:] if not a.startswith(("/", "-"))]
-        if len(nao_flags) < 2:
+        padrao = None
+        alvos = []
+        for a in args[1:]:
+            if a.lower().startswith(("/c:", "-c:")):
+                padrao = a[3:].strip("\"'")
+            elif not a.startswith(("/", "-")):
+                if padrao is None:
+                    padrao = a
+                else:
+                    alvos.append(a)
+
+        if padrao is None or not alvos:
             return {"stdout": "", "stderr": "Uso: findstr [opções] padrão arquivo", "codigo_saida": 2}
-        padrao = nao_flags[0]
+
         linhas_match = []
-        for nome_arq in nao_flags[1:]:
+        for nome_arq in alvos:
             try:
                 p_arq = resolver_caminho_seguro(nome_arq, base_dir=raiz, operacao="leitura")
             except ValueError:
