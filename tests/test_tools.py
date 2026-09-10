@@ -1300,3 +1300,82 @@ def test_type_multi_arquivo_formato_cmd(tmp_path):
     assert res_multi["stdout"] == esperado
 
 
+def test_git_bloqueio_objetos_nus_blob_e_tree(tmp_path):
+    import subprocess
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True)
+
+    (tmp_path / "app.py").write_text("print('safe')", encoding="utf-8")
+    (tmp_path / ".env").write_text("CHAVE=SUPERSEGREDO_CRITICO\n", encoding="utf-8")
+    subprocess.run(["git", "add", "app.py", ".env"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "commit inicial"], cwd=str(tmp_path), capture_output=True)
+
+    # Obtém SHA do blob do .env (completo e abreviado)
+    res_blob = subprocess.run(["git", "rev-parse", "HEAD:.env"], cwd=str(tmp_path), capture_output=True, text=True)
+    blob_sha = res_blob.stdout.strip()
+    assert len(blob_sha) == 40
+    blob_abbrev = blob_sha[:7]
+
+    # Obtém SHA da tree
+    res_tree = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=str(tmp_path), capture_output=True, text=True)
+    tree_sha = res_tree.stdout.strip()
+
+    # Obtém SHA do commit
+    res_commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(tmp_path), capture_output=True, text=True)
+    commit_sha = res_commit.stdout.strip()
+
+    # Bloqueio de objeto blob nu com e sem flags de resumo, completo e abreviado
+    res1 = executar_comando(f"git show {blob_sha}", base_dir=tmp_path)
+    assert res1["codigo_saida"] == -1
+    assert "Objeto git nu (blob/tree) não permitido" in res1["stderr"]
+    assert "SUPERSEGREDO_CRITICO" not in res1["stdout"]
+
+    res2 = executar_comando(f"git show --stat {blob_sha}", base_dir=tmp_path)
+    assert res2["codigo_saida"] == -1
+    assert "Objeto git nu (blob/tree) não permitido" in res2["stderr"]
+    assert "SUPERSEGREDO_CRITICO" not in res2["stdout"]
+
+    res3 = executar_comando(f"git show --stat {blob_abbrev}", base_dir=tmp_path)
+    assert res3["codigo_saida"] == -1
+    assert "Objeto git nu (blob/tree) não permitido" in res3["stderr"]
+    assert "SUPERSEGREDO_CRITICO" not in res3["stdout"]
+
+    res4 = executar_comando(f"git show --name-only {blob_abbrev}", base_dir=tmp_path)
+    assert res4["codigo_saida"] == -1
+    assert "Objeto git nu (blob/tree) não permitido" in res4["stderr"]
+
+    res5 = executar_comando(f"git show --name-status {blob_abbrev}", base_dir=tmp_path)
+    assert res5["codigo_saida"] == -1
+    assert "Objeto git nu (blob/tree) não permitido" in res5["stderr"]
+
+    res6 = executar_comando(f"git show -s {blob_abbrev}", base_dir=tmp_path)
+    assert res6["codigo_saida"] == -1
+    assert "Objeto git nu (blob/tree) não permitido" in res6["stderr"]
+
+    res7 = executar_comando(f"git show --no-patch {blob_abbrev}", base_dir=tmp_path)
+    assert res7["codigo_saida"] == -1
+    assert "Objeto git nu (blob/tree) não permitido" in res7["stderr"]
+
+    # Bloqueio de objeto tree
+    res_t1 = executar_comando(f"git show {tree_sha}", base_dir=tmp_path)
+    assert res_t1["codigo_saida"] == -1
+    assert "Objeto git nu (blob/tree) não permitido" in res_t1["stderr"]
+
+    res_t2 = executar_comando(f"git show --stat {tree_sha}", base_dir=tmp_path)
+    assert res_t2["codigo_saida"] == -1
+    assert "Objeto git nu (blob/tree) não permitido" in res_t2["stderr"]
+
+    # Bloqueio em git log
+    res_l1 = executar_comando(f"git log {blob_sha}", base_dir=tmp_path)
+    assert res_l1["codigo_saida"] == -1
+    assert "Objeto git nu (blob/tree) não permitido" in res_l1["stderr"]
+
+    # Objeto commit com resumo é permitido
+    res_c1 = executar_comando(f"git show --stat {commit_sha}", base_dir=tmp_path)
+    assert res_c1["codigo_saida"] == 0
+    res_c2 = executar_comando("git show --stat HEAD", base_dir=tmp_path)
+    assert res_c2["codigo_saida"] == 0
+
+
+

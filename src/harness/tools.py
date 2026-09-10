@@ -578,6 +578,71 @@ def validar_comando_whitelist(
             if ".." in partes:
                 return f"Caminho não pode conter '..' (fora do projeto): '{a}'."
 
+
+
+        for a in args[2:]:
+
+            # Se for revisão com caminho (ex: HEAD:.env ou commit:caminho)
+            if ":" in a and not a.startswith("-"):
+                rev_partes = a.split(":", 1)
+                caminho_rev = rev_partes[1]
+                if not caminho_rev:
+                    return f"Referência de objeto git inválida: '{a}'."
+                if Path(caminho_rev).is_absolute() or (len(caminho_rev) >= 2 and caminho_rev[1] == ":") or caminho_rev.startswith(("/", "\\")):
+                    return f"Caminho absoluto não permitido no git: '{a}'."
+                if ".." in caminho_rev.replace("\\", "/").split("/"):
+                    return f"Caminho não pode conter '..' (fora do projeto): '{a}'."
+                if caminho_protegido(caminho_rev, modo="leitura"):
+                    return f"Acesso a caminho protegido bloqueado no git: '{a}'."
+                try:
+                    alvo_rev = resolver_caminho_seguro(caminho_rev, base_dir=raiz, operacao="leitura")
+                except ValueError:
+                    return f"Caminho fora do diretório do projeto: '{a}'."
+                try:
+                    res_cat = subprocess.run(
+                        ["git", "cat-file", "-t", a],
+                        cwd=str(raiz),
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    if res_cat.returncode == 0 and res_cat.stdout.strip() == "tree":
+                        return f"Objeto git do tipo tree não permitido no git: '{a}'."
+                except Exception:
+                    pass
+            elif not a.startswith("-"):
+                if a == "--":
+                    continue
+                if caminho_protegido(a, modo="leitura"):
+                    return f"Acesso a caminho protegido bloqueado no git: '{a}'."
+
+                # Inspeciona se 'a' é um objeto git nu (blob, tree, commit, tag)
+                e_objeto_git = False
+                try:
+                    res_cat = subprocess.run(
+                        ["git", "cat-file", "-t", a],
+                        cwd=str(raiz),
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    if res_cat.returncode == 0:
+                        tipo_obj = res_cat.stdout.strip()
+                        if tipo_obj in ("blob", "tree"):
+                            return f"Objeto git nu (blob/tree) não permitido no git {subcmd}: '{a}'."
+                        if tipo_obj in ("commit", "tag"):
+                            e_objeto_git = True
+                        else:
+                            return f"Tipo de objeto git não permitido no git {subcmd}: '{a}'."
+                except Exception:
+                    pass
+
+                if not e_objeto_git:
+                    try:
+                        alvo = resolver_caminho_seguro(a, base_dir=raiz, operacao="leitura")
+                    except ValueError:
+                        return f"Caminho fora do diretório do projeto: '{a}'."
+
         if subcmd == "diff":
             flags_resumo_diff = {"--stat", "--name-only", "--name-status", "--no-patch", "-s"}
             tem_resumo_diff = any(
@@ -606,30 +671,6 @@ def validar_comando_whitelist(
                     f"Comando 'git show' sem arquivo específico requer flags de resumo "
                     f"(--stat, --name-only, --name-status, --no-patch, -s): 'git show {' '.join(args[2:])}'."
                 )
-
-        for a in args[2:]:
-
-            # Se for revisão com caminho (ex: HEAD:.env ou commit:caminho)
-            if ":" in a and not a.startswith("-"):
-                rev_partes = a.split(":", 1)
-                caminho_rev = rev_partes[1]
-                if Path(caminho_rev).is_absolute() or (len(caminho_rev) >= 2 and caminho_rev[1] == ":") or caminho_rev.startswith(("/", "\\")):
-                    return f"Caminho absoluto não permitido no git: '{a}'."
-                if ".." in caminho_rev.replace("\\", "/").split("/"):
-                    return f"Caminho não pode conter '..' (fora do projeto): '{a}'."
-                if caminho_protegido(caminho_rev, modo="leitura"):
-                    return f"Acesso a caminho protegido bloqueado no git: '{a}'."
-                try:
-                    alvo_rev = resolver_caminho_seguro(caminho_rev, base_dir=raiz, operacao="leitura")
-                except ValueError:
-                    return f"Caminho fora do diretório do projeto: '{a}'."
-            elif not a.startswith("-"):
-                if caminho_protegido(a, modo="leitura"):
-                    return f"Acesso a caminho protegido bloqueado no git: '{a}'."
-                try:
-                    alvo = resolver_caminho_seguro(a, base_dir=raiz, operacao="leitura")
-                except ValueError:
-                    return f"Caminho fora do diretório do projeto: '{a}'."
 
     elif executavel in {"type", "findstr", "where", "dir"}:
         if executavel == "type" and len(args) < 2:
