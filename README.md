@@ -3,7 +3,7 @@
 > Loop multi-turno agnóstico de provider, tool use segura e **74,6% a 76,2% de economia de custo via context caching** (benchmark real com Gemini).
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-93%2F93%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-98%2F98%20passing-brightgreen)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 ![Zero Libs](https://img.shields.io/badge/external--deps-zero-informational)
 ![CI](https://github.com/brmarcosbr/harness/actions/workflows/ci.yml/badge.svg)
@@ -167,8 +167,8 @@ A partir do Marco W7, o harness adota uma **política de execução estrita por 
      - `type`: Leitura rápida de arquivos (executada nativamente com validação de caminhos e bloqueio a arquivos protegidos).
      - `python`: Execução estrita de scripts Python dentro do projeto (`python <arquivo>.py`). Flags de interpretação inline (`-c`, `-m`, `-i`), referências com `..` e caminhos absolutos são categoricamente bloqueados.
      - `git`: Apenas subcomandos de leitura informativa (`status`, `diff`, `log`, `show`, `ls-files`). Subcomandos mutantes ou destrutivos (`clean`, `reset`, `push`, `checkout`, `commit`, etc.) são rejeitados.
-     - `findstr`: Busca textual rápida (com fallback transparente em plataformas não-Windows).
-     - `where`: Localização de executáveis seguros no PATH (com fallback cross-platform via `shutil.which`).
+     - `findstr`: Busca textual rápida (com fallback transparente em plataformas não-Windows, atuando como busca por substring direta em arquivos sem suporte a flags avançadas do findstr nativo do Windows).
+     - `where`: Localização de executáveis seguros no PATH (com fallback cross-platform via `shutil.which`, tratando automaticamente o mapeamento de `python` para `python3` caso necessário).
      - `echo`: Impressão de texto no terminal (sem permitir redirecionamento via shell).
    - Qualquer binário fora da whitelist (ex: `rm`, `del`, `curl`, `powershell`, `cmd`, `bash`, `sh`, `nc`) é bloqueado imediatamente com código de saída `-1` e mensagem explicativa.
 
@@ -381,7 +381,7 @@ Modelo final: gemini-3.8-flash
 
 ## Executando a Suíte de Testes
 
-Os 79 testes unitários são executados 100% offline (utilizam mocks e providers fakes, sem dependência de rede ou consumo de cotas de API):
+Os 98 testes unitários são executados 100% offline (utilizam mocks e providers fakes, sem dependência de rede ou consumo de cotas de API):
 
 ```bash
 pytest tests/ -q
@@ -390,13 +390,15 @@ pytest tests/ -q
 Saída esperada:
 
 ```text
-...............................................................................     [100%]
-79 passed in 0.40s
+..................................................................................................  [100%]
+98 passed in 1.50s
 ```
 
 Os testes cobrem:
 - Cálculo e precisão de preços (Gemini e DeepSeek com janelas de cache).
-- Resolução e validação de segurança de ferramentas (blocklist, timeouts, path traversal).
+- Resolução e validação de segurança de ferramentas (whitelist sem shell, blocklist, timeouts, path traversal).
+- Validação estrita de argumentos git e proteção contra symlink/junction traversal.
+- Saneamento de credenciais do ambiente contra vazamento em subprocessos.
 - Serialização e conversão de schemas nos formatos Gemini e OpenAI.
 - Normalização e parsing de respostas multi-turnos com tool calling.
 - Poda de contexto e garantia de prefix invariance.

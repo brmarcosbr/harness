@@ -529,6 +529,8 @@ def test_tokenizar_comando():
     assert _tokenizar("echo x > .env") == ["echo", "x", ">", ".env"]
     assert _tokenizar("dir & type safe.txt") == ["dir", "&", "type", "safe.txt"]
     assert _tokenizar("echo $VAR %VAR%") == ["echo", "$VAR", "%VAR%"]
+    assert _tokenizar(r'echo "hello \"world\""') == ["echo", 'hello "world"']
+    assert _tokenizar(r"findstr 'palavra \'com\' aspas' doc.txt") == ["findstr", "palavra 'com' aspas", "doc.txt"]
 
     with pytest.raises(ValueError, match="desbalanceadas"):
         _tokenizar('type "arquivo.txt')
@@ -538,11 +540,20 @@ def test_tokenizar_comando():
 
 
 def test_executar_comando_whitelist_tabela_permitidos(tmp_path):
+    import subprocess
+    # Isola o teste do ambiente criando repositório temporário
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True)
+
     arquivo_teste = tmp_path / "README.md"
     arquivo_teste.write_text("Linha 1: Harness Agent\nLinha 2: Outra coisa\n", encoding="utf-8")
 
     script_py = tmp_path / "bench_test_math.py"
     script_py.write_text("print('resultado: 42')", encoding="utf-8")
+
+    subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "commit inicial de teste"], cwd=str(tmp_path), capture_output=True)
 
     # dir
     res_dir = executar_comando("dir", base_dir=tmp_path)
@@ -564,23 +575,23 @@ def test_executar_comando_whitelist_tabela_permitidos(tmp_path):
     assert res_py["codigo_saida"] == 0
     assert "resultado: 42" in res_py["stdout"]
 
-    # git status (no repo real do projeto)
-    res_git_status = executar_comando("git status")
+    # git status (no repo temporário isolado)
+    res_git_status = executar_comando("git status", base_dir=tmp_path)
     assert res_git_status["codigo_saida"] == 0
-    assert "branch" in res_git_status["stdout"].lower()
+    assert "branch" in res_git_status["stdout"].lower() or "working tree clean" in res_git_status["stdout"].lower()
 
-    # git log (no repo real do projeto)
-    res_git_log = executar_comando("git log -n 1")
+    # git log (no repo temporário isolado)
+    res_git_log = executar_comando("git log -n 1", base_dir=tmp_path)
     assert res_git_log["codigo_saida"] == 0
-    assert "commit" in res_git_log["stdout"].lower()
+    assert "commit inicial de teste" in res_git_log["stdout"]
 
     # findstr "Harness" README.md
     res_findstr = executar_comando('findstr "Harness" README.md', base_dir=tmp_path)
     assert res_findstr["codigo_saida"] == 0
     assert "Harness Agent" in res_findstr["stdout"]
 
-    # where python
-    res_where = executar_comando("where python")
+    # where python (suporta alias python/python3)
+    res_where = executar_comando("where python", base_dir=tmp_path)
     assert res_where["codigo_saida"] == 0
     assert "python" in res_where["stdout"].lower()
 
@@ -681,6 +692,31 @@ def test_symlink_e_junction_traversal_bloqueado(tmp_path):
         res_ler = ler_arquivo("link_dir/secreto.txt", base_dir=raiz)
         assert res_ler["sucesso"] is False
         assert res_ler["conteudo"] == ""
+
+
+def test_comando_bloqueado_sem_falsos_positivos():
+    assert comando_bloqueado("echo .env") is None
+    assert comando_bloqueado("type foo.git") is None
+    assert comando_bloqueado("echo projeto.git") is None
+
+
+def test_type_nativo_limite_tamanho_200kb(tmp_path):
+    grande = tmp_path / "grande.txt"
+    grande.write_bytes(b"A" * (205 * 1024))
+    res = executar_comando("type grande.txt", base_dir=tmp_path)
+    assert res["codigo_saida"] == 1
+    assert "excede limite de leitura de 200 KB" in res["stderr"]
+
+
+def test_dir_nativo_rejeita_flags_nao_suportadas(tmp_path):
+    res_s = executar_comando("dir /s", base_dir=tmp_path)
+    assert res_s["codigo_saida"] in (-1, 1)
+    assert "não suportada" in res_s["stderr"]
+
+    res_r = executar_comando("dir /r", base_dir=tmp_path)
+    assert res_r["codigo_saida"] in (-1, 1)
+    assert "não suportada" in res_r["stderr"]
+
 
 
 

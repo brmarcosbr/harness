@@ -52,6 +52,7 @@ LIMITE_TRUNCAMENTO_SAIDA = 4000
 
 DIRS_IGNORADOS_BUSCA = DIRS_IGNORADOS
 
+# Conjuntos mantidos para inspeção secundária e defesa em profundidade (vestígio pré-whitelist)
 LEITURA_COMANDOS = {"type", "cat", "more", "findstr", "head", "tail", "get-content", "gc"}
 ESCRITA_COMANDOS = {"copy", "move", "xcopy", "robocopy", "mklink", "attrib", "icacls"}
 
@@ -175,13 +176,6 @@ def comando_toca_protegido(comando: str) -> Optional[str]:
 
     todos_comandos = _desmembrar_wrappers(comando)
 
-    # Varredura direta por ocorrências de nomes protegidos (.env e .git)
-    for cmd_str in todos_comandos:
-        if re.search(r"\.env(?:\b|\.|[\"' /\\:])", cmd_str, re.IGNORECASE):
-            return "comando_toca_protegido: .env"
-        if re.search(r"\.git(?:\b|/|\\)", cmd_str, re.IGNORECASE):
-            return "comando_toca_protegido: .git"
-
     for cmd_str in todos_comandos:
         subcomandos = re.split(r"&&|\|\||[&|;]", cmd_str)
         for sub in subcomandos:
@@ -211,6 +205,19 @@ def comando_toca_protegido(comando: str) -> Optional[str]:
             cmd_nome = tokens[idx].lower()
             args = tokens[idx + 1:]
 
+            # echo puro não acessa nem modifica caminhos (redirecionamentos são avaliados à parte)
+            if cmd_nome == "echo":
+                continue
+
+            # Varrer tokens de argumentos para detectar caminhos protegidos (.env, .git, etc.)
+            for a in args:
+                if (a.startswith("-") or a.startswith("/")) and not (":" in a and not a.startswith("--")):
+                    continue
+                cand = a.split(":", 1)[1] if (":" in a and not a.startswith("-")) else a
+                cand_limpo = cand.strip("\"'")
+                if caminho_protegido(cand_limpo, modo="leitura") or caminho_protegido(cand_limpo, modo="escrita"):
+                    return f"comando_toca_protegido: {cmd_nome} {a}"
+
             # Git show / git diff
             if cmd_nome == "git" and args:
                 sub_git = args[0].lower()
@@ -218,7 +225,8 @@ def comando_toca_protegido(comando: str) -> Optional[str]:
                     for a in args[1:]:
                         if a.startswith("-") and not (":" in a and not a.startswith("--")):
                             continue
-                        if caminho_protegido(a, modo="leitura"):
+                        cand = a.split(":", 1)[1] if (":" in a and not a.startswith("-")) else a
+                        if caminho_protegido(cand, modo="leitura"):
                             return f"comando_toca_protegido: git {sub_git} {a}"
 
             # Comandos de leitura
@@ -330,17 +338,32 @@ def obter_env_saneado(chaves_ocultas: Optional[Set[str]] = None) -> Dict[str, st
 
 def _tokenizar(comando: str) -> List[str]:
     """
-    Função pura que divide o comando por espaços respeitando aspas simples e duplas.
-    O conteúdo entre aspas torna-se um único token sem as aspas.
+    Função pura que divide o comando por espaços respeitando aspas simples e duplas,
+    reconhecendo aspas escapadas (\\" e \\') como caracteres literais.
+    O conteúdo entre aspas torna-se um único token sem as aspas envolventes.
     Não expande variáveis nem interpreta metacaracteres (>, &, | são literais).
-    Levanta ValueError caso haja aspas não fechadas.
+    Levanta ValueError caso haja aspas não fechadas (desbalanceadas).
     """
     tokens: List[str] = []
     atual: List[str] = []
     em_aspas: Optional[str] = None
     teve_aspas: bool = False
+    escapado: bool = False
 
     for c in comando.strip():
+        if escapado:
+            if c in ('"', "'", "\\"):
+                atual.append(c)
+            else:
+                atual.append("\\")
+                atual.append(c)
+            escapado = False
+            continue
+
+        if c == "\\":
+            escapado = True
+            continue
+
         if em_aspas:
             if c == em_aspas:
                 em_aspas = None
@@ -357,6 +380,9 @@ def _tokenizar(comando: str) -> List[str]:
                     teve_aspas = False
             else:
                 atual.append(c)
+
+    if escapado:
+        atual.append("\\")
 
     if em_aspas:
         raise ValueError(f"Aspas não fechadas (desbalanceadas) no comando: {comando}")
@@ -471,6 +497,11 @@ def validar_comando_whitelist(
         if executavel == "type" and len(args) < 2:
             return "Comando type requer ao menos um arquivo: 'type <arquivo>'."
 
+        if executavel == "dir":
+            flags_inv = [a for a in args[1:] if a.startswith(("/", "-")) and a.lower() not in ("/b", "-b")]
+            if flags_inv:
+                return f"Flag não suportada para 'dir': '{flags_inv[0]}'. O comando 'dir' suporta apenas a flag '/b'."
+
         for a in args[1:]:
             # Ignora flags de comando (como /b, -b, -n)
             if a.startswith(("/", "-")):
@@ -519,7 +550,7 @@ def executar_comando(comando: str, base_dir: Optional[Path] = None) -> Dict[str,
             "codigo_saida": -1
         }
 
-    # 2. Camada secundária: Blocklist e caminhos protegidos (defesa em profundidade)
+    # 2. Pré-checagem de segurança (camada secundária em profundidade para bloqueio imediato de comandos destrutivos)
     padrao = comando_bloqueado(comando)
     if padrao:
         return {
@@ -528,7 +559,7 @@ def executar_comando(comando: str, base_dir: Optional[Path] = None) -> Dict[str,
             "codigo_saida": -1
         }
 
-    # 3. Camada primária: Validação de whitelist e argumentos
+    # 3. Política de execução (camada primária: validação estrita de whitelist e argumentos)
     raiz = (base_dir or Path.cwd()).resolve()
     erro_whitelist = validar_comando_whitelist(args, base_dir=raiz)
     if erro_whitelist:
@@ -566,6 +597,16 @@ def executar_comando(comando: str, base_dir: Optional[Path] = None) -> Dict[str,
                     "codigo_saida": 1
                 }
             try:
+                tamanho = alvo.stat().st_size
+                if tamanho > LIMITE_LEITURA_ARQUIVO_BYTES:
+                    return {
+                        "stdout": "",
+                        "stderr": (
+                            f"Arquivo excede limite de leitura de "
+                            f"{LIMITE_LEITURA_ARQUIVO_BYTES // 1024} KB: {arq} ({tamanho} bytes)"
+                        ),
+                        "codigo_saida": 1
+                    }
                 conteudos.append(alvo.read_text(encoding="utf-8", errors="replace"))
             except Exception as e:
                 return {
@@ -639,7 +680,13 @@ def executar_comando(comando: str, base_dir: Optional[Path] = None) -> Dict[str,
 
     # 5. Handlers para where e findstr em plataformas onde não existem nativamente (ex.: Linux CI)
     if executavel == "where" and not shutil.which("where"):
-        caminhos_encontrados = [shutil.which(a) for a in args[1:] if shutil.which(a)]
+        caminhos_encontrados = []
+        for a in args[1:]:
+            p = shutil.which(a)
+            if not p and a.lower() == "python":
+                p = shutil.which("python3")
+            if p:
+                caminhos_encontrados.append(p)
         if caminhos_encontrados:
             return {"stdout": "\n".join(caminhos_encontrados) + "\n", "stderr": "", "codigo_saida": 0}
         return {"stdout": "", "stderr": "INFO: Could not find files for the given pattern(s).\n", "codigo_saida": 1}
@@ -652,6 +699,12 @@ def executar_comando(comando: str, base_dir: Optional[Path] = None) -> Dict[str,
         linhas_match = []
         for nome_arq in nao_flags[1:]:
             p_arq = (raiz / nome_arq).resolve()
+            try:
+                p_arq.relative_to(raiz)
+            except ValueError:
+                continue
+            if caminho_protegido(p_arq, modo="leitura") or caminho_protegido(nome_arq, modo="leitura"):
+                continue
             if p_arq.is_file():
                 try:
                     for linha in p_arq.read_text(encoding="utf-8", errors="replace").splitlines():
