@@ -18,7 +18,7 @@ from harness.env import CHAVES_CARREGADAS_ENV
 
 # Padrões bloqueados de comandos destrutivos de sistema no Windows / cmd.exe
 PADROES_BLOQUEADOS = [
-    r"\bformat\b",
+    r"(?:^|[&|;])\s*format(?:\.exe)?(?:\s+|$)",
     r"\bdiskpart\b",
     r"\bshutdown\b",
     r"\brd\s+/[sq]\b|\brd\b.*/[sq]",

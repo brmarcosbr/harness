@@ -1180,3 +1180,65 @@ def test_findstr_validacao_estrita_argumentos_e_curingas(tmp_path):
     res_ok = executar_comando("findstr teste teste.txt", base_dir=tmp_path)
     assert res_ok["codigo_saida"] == 0
     assert "linha de teste" in res_ok["stdout"]
+
+
+def test_comando_bloqueado_format_verb_position(tmp_path):
+    # format como verbo de comando destrutivo deve ser bloqueado
+    assert comando_bloqueado("format C:") is not None
+    assert comando_bloqueado("format C: /FS:NTFS") is not None
+    assert comando_bloqueado("format.exe D:") is not None
+    assert comando_bloqueado("echo oi & format C:") is not None
+
+    # format como argumento/flag inofensiva NÃO deve ser bloqueado na blocklist
+    assert comando_bloqueado("git log --format=oneline") is None
+    assert comando_bloqueado("dir format") is None
+    assert comando_bloqueado("findstr format n.py") is None
+
+    # Execução via executar_comando com dir format e findstr format
+    (tmp_path / "format").mkdir()
+    (tmp_path / "format" / "arq.txt").write_text("conteudo", encoding="utf-8")
+    res_dir = executar_comando("dir format", base_dir=tmp_path)
+    assert res_dir["codigo_saida"] == 0
+
+    (tmp_path / "n.py").write_text("def format_string(): pass\n", encoding="utf-8")
+    res_findstr = executar_comando("findstr format n.py", base_dir=tmp_path)
+    assert res_findstr["codigo_saida"] == 0
+    assert "format_string" in res_findstr["stdout"]
+
+
+def test_readme_contagem_testes_sincronizada():
+    import ast
+    import re
+    from pathlib import Path
+    raiz = Path(__file__).parent.parent
+    tests_dir = raiz / "tests"
+    readme_path = raiz / "README.md"
+
+    # Conta todas as funções test_* nos arquivos test_*.py
+    total_testes = sum(
+        1
+        for f in tests_dir.glob("test_*.py")
+        for node in ast.walk(ast.parse(f.read_text(encoding="utf-8")))
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")
+    )
+
+    readme_texto = readme_path.read_text(encoding="utf-8")
+
+    # 1. Checa contagem no badge
+    m_badge = re.search(r"img\.shields\.io/badge/tests-(\d+)%2F\1%20passing", readme_texto)
+    assert m_badge is not None, "Badge de testes com padrão 'tests-N%2FN%20passing' não encontrado no README.md"
+    badge_count = int(m_badge.group(1))
+    assert badge_count == total_testes, f"Badge no README cita {badge_count}, mas suíte tem {total_testes} testes"
+
+    # 2. Checa contagem no texto da seção de testes
+    m_texto = re.search(r"Os (\d+) testes unitários são executados 100% offline", readme_texto)
+    assert m_texto is not None, "Frase 'Os N testes unitários...' não encontrada no README.md"
+    texto_count = int(m_texto.group(1))
+    assert texto_count == total_testes, f"Texto no README cita {texto_count}, mas suíte tem {total_testes} testes"
+
+    # 3. Checa contagem no bloco de saída esperada do pytest
+    m_saida = re.search(r"(\d+) passed in", readme_texto)
+    assert m_saida is not None, "Saída 'N passed in' não encontrada no README.md"
+    saida_count = int(m_saida.group(1))
+    assert saida_count == total_testes, f"Saída no README cita {saida_count}, mas suíte tem {total_testes} testes"
+
