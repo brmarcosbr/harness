@@ -3,7 +3,7 @@
 > Loop multi-turno agnóstico de provider, tool use segura e **74,6% a 76,2% de economia de custo via context caching** (benchmark real com Gemini).
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-104%2F104%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-113%2F113%20passing-brightgreen)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 ![Zero Libs](https://img.shields.io/badge/external--deps-zero-informational)
 ![CI](https://github.com/brmarcosbr/harness/actions/workflows/ci.yml/badge.svg)
@@ -128,11 +128,11 @@ O harness disponibiliza 4 ferramentas nativas para o modelo:
 3. `escrever_arquivo`: Criação e sobrescrita de arquivos com limite de 1 MB.
 4. `buscar_no_projeto`: Busca por padrão regex no conteúdo dos arquivos de código/texto do projeto (ignora pastas `.venv`, `__pycache__`, `.git`, `.pytest_cache`, `build` e `dist`; permite filtro por extensão opcional; ignora binários e arquivos maiores que 1 MB; limite máximo de 50 resultados). **Não** busca por nome de arquivo.
 
-### Medidas de Mitigação Implementadas
-
 - **Blocklist de Comandos Críticos:** Bloqueio via regex dos padrões perigosos mapeados em `PADROES_BLOQUEADOS`: `format`, `diskpart`, `shutdown`, `rd /s` (ou `/q`), `rmdir /s` (ou `/q`), `rm -rf`, `reg delete`, `del /s` (ou `/f` ou `/q`), `erase /s` (ou `/f` ou `/q`), `cipher /w` e `taskkill /f /im`.
-- **Caminhos Protegidos:** Bloqueio total de leitura e escrita para `.env` e `.git/`, e bloqueio de escrita para `.github/` (configurados em `CAMINHOS_PROTEGIDOS`).
-- **Proteção contra Path Traversal:** Validação estrita via `Path.resolve()` garantindo que nenhum caminho acesse pastas superiores à raiz do projeto (`..` proibido).
+- **Caminhos Protegidos Configuráveis (`CAMINHOS_PROTEGIDOS`):** Centralizados em `config.py` e verificados pela função autoritativa `resolver_caminho_seguro`:
+  - `bloqueio_total` (leitura e escrita bloqueadas): `.env` (bloqueando `.env`, `.env.*` e `.env_*`, com exceção segura para templates como `.env.example`, `.env.sample` e `.env.template`) e `.git/` (todos os objetos, configs e referências do repositório);
+  - `somente_escrita` (leitura permitida se necessário, escrita categoricamente bloqueada): `.github/` (protege workflows do GitHub Actions e arquivos de automação contra sobrescrita ou corrupção pelo modelo).
+- **Proteção contra Path Traversal e Symlink Escape:** Validação estrita via `resolver_caminho_seguro` garantindo que nenhum caminho acesse pastas superiores à raiz do projeto (`..` proibido) ou escape da árvore do projeto através de symlinks ou NTFS junctions.
 - **Timeouts Rígidos:** Cada execução de comando possui limite padrão de 30 segundos, prevenindo bloqueios em processos interativos ou loops infinitos.
 - **Proteção Multiplataforma via Whitelist:** A execução de processos sem shell (`shell=False`) e restrita à whitelist de binários permitidos impede a execução de comandos destrutivos tanto no Windows (`cmd.exe`) quanto em ambientes POSIX/Linux (`rm -rf`, `mkfs`, etc.). Handlers nativos como `type`, `dir`, `where` e `findstr` contam com emulação transparente em Python para portabilidade integral.
 
@@ -219,6 +219,7 @@ Resultados medidos no modelo `gemini-3.8-flash` com o contexto do repositório (
   - **T2 (geracao-com-teste):** Criar `bench_math.py` com função `soma(a, b)` e `bench_test_math.py` com validação de saída não-zero em caso de erro, e executar `python bench_test_math.py`.
   - **T3 (spec-de-arquivo):** Criar `bench_contador.py` com função `contar_palavras(t)` e `bench_test_contador.py` com casos de teste específicos, e executar `python bench_test_contador.py`.
 - O modelo decide autonomamente a quantidade de turnos para cada tarefa (por exemplo, na T1 o modelo utilizou 5 turnos com cache e 4 turnos sem cache, explorando arquivos de forma independente).
+- **Alternância de Ordem de Execução (Mitigação de Viés):** Para evitar que a ordem fixa (ON sempre antes de OFF) introduza viés de aquecimento de cache ou vantagens de latência no servidor do provedor, o benchmark alterna a ordem de execução a cada tarefa: T1 roda ON -> OFF, T2 roda OFF -> ON, e T3 roda ON -> OFF.
 - **As Duas Bases de Cálculo de Economia (Transparência Total):**
   1. **74,6% — Comparação Direta entre Execuções Distintas:** O custo real da suíte completa com Cache OFF foi de **$0.407592** (15 turnos), enquanto com Cache ON foi de **$0.103586** (16 turnos). A razão direta `($0.407592 - $0.103586) / $0.407592` resulta em **74,6% de economia real**, mesmo com o agente executando 1 turno a mais na rodada com cache.
   2. **76,2% — Economia Contrafactual Turno a Turno (*):** O valor reportado na tabela de benchmark (`$0.331087 / 76,2%`) é a soma contrafactual calculada pelo harness sobre a exata execução com Cache ON: o que aqueles 16 turnos específicos teriam custado caso nenhum token tivesse sido servido pelo cache ($0.434673 contrafactual) versus o que de fato custaram com o desconto de cache ($0.103586 real).

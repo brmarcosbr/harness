@@ -3,7 +3,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
-from harness.config import DIRS_IGNORADOS
+from harness.config import DIRS_IGNORADOS, MAX_TURNOS_MANTER_PODA
 from harness.tools import caminho_protegido, resolver_caminho_seguro
 
 PREFIXO_CONTEXTO = "\n\n=== CONTEXTO DO PROJETO ===\n"
@@ -174,7 +174,7 @@ def _agrupar_turnos(mensagens: List[Dict[str, Any]]) -> List[List[Dict[str, Any]
 def podar_historico(
     mensagens: List[Dict[str, Any]],
     teto_tokens: int,
-    max_turnos_manter: int = 8
+    max_turnos_manter: int = MAX_TURNOS_MANTER_PODA
 ) -> List[Dict[str, Any]]:
     """
     Poda o histórico removendo blocos de turnos completos antigos do meio quando o total estimado > teto_tokens.

@@ -544,3 +544,60 @@ def test_gerar_contexto_repo_filtra_symlinks_e_junctions_externas(tmp_path):
     assert "CHAVE_SECRETA_FORA" not in contexto
     assert "segredo_fora.txt" not in contexto
 
+
+def test_podar_historico_default_max_turnos_4():
+    """Garante que a poda usa o default MAX_TURNOS_MANTER_PODA = 4 e descarta intermediários."""
+    head_ctx = {"role": "user", "text": "HEAD_CTX"}
+    head_task = {"role": "user", "text": "HEAD_TASK"}
+    mensagens = [head_ctx, head_task]
+
+    # Cria 8 turnos intermediários volumosos
+    for t in range(1, 9):
+        mensagens.append({"role": "model", "text": f"TURNO_{t}_MODEL: " + ("x" * 500)})
+        mensagens.append({"role": "tool", "text": f"TURNO_{t}_TOOL: " + ("y" * 500)})
+
+    # Tail recente: turno 8
+    tokens_total = estimar_tokens_historico(mensagens)
+    teto = tokens_total // 2
+
+    # Chama sem passar max_turnos_manter para usar o default do config (4)
+    podado = podar_historico(mensagens, teto_tokens=teto)
+
+    # Head preservado
+    assert podado[0] == head_ctx
+    assert podado[1] == head_task
+
+    # Turnos mais antigos (1, 2, 3) devem ter sido podados
+    textos_podados = [m.get("text", "") for m in podado]
+    assert not any("TURNO_1_MODEL" in t for t in textos_podados)
+    assert not any("TURNO_2_MODEL" in t for t in textos_podados)
+
+    # 4 turnos mais recentes mantidos na cauda (turnos 5, 6, 7, 8)
+    assert any("TURNO_8_MODEL" in t for t in textos_podados)
+    assert any("TURNO_7_MODEL" in t for t in textos_podados)
+
+
+def test_cli_bench_avisos_argumentos_ignorados(monkeypatch, capsys):
+    import sys
+    from harness.__main__ import main
+
+    monkeypatch.setenv("GEMINI_API_KEY", "fake_key_for_test")
+    # Mock do rodar_benchmark e imprimir_tabela para não rodar LLM
+    import harness.__main__ as main_module
+    import harness.bench as bench_module
+    monkeypatch.setattr(bench_module, "rodar_benchmark", lambda **kwargs: [])
+    monkeypatch.setattr(bench_module, "imprimir_tabela", lambda res: "")
+
+    # Simula passagem de --bench com --tarefa e --contexto-repo
+    monkeypatch.setattr("sys.argv", [
+        "harness", "--bench", "--tarefa", "tarefa_qualquer", "--contexto-repo", "--no-cache"
+    ])
+
+    main()
+    stderr_captured = capsys.readouterr().err
+
+    assert "[AVISO] --tarefa ignorada no modo --bench" in stderr_captured
+    assert "[AVISO] --contexto / --contexto-repo ignorado no modo --bench" in stderr_captured
+    assert "[AVISO] --no-cache ignorado no modo --bench" in stderr_captured
+
+

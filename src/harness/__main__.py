@@ -46,8 +46,8 @@ def criar_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--tarefa",
         type=str,
-        default="liste os arquivos desta pasta",
-        help="Instrução a ser executada pelo agente."
+        default=None,
+        help="Instrução a ser executada pelo agente (padrão: 'liste os arquivos desta pasta')."
     )
     parser.add_argument(
         "--contexto",
@@ -135,6 +135,16 @@ def main():
 
     try:
         if args.bench:
+            if args.tarefa is not None:
+                print(
+                    "[AVISO] --tarefa ignorada no modo --bench: o benchmark possui sua própria suíte de tarefas.",
+                    file=sys.stderr
+                )
+            if args.contexto or args.contexto_repo:
+                print(
+                    "[AVISO] --contexto / --contexto-repo ignorado no modo --bench: o benchmark gera contexto do repo para cada tarefa.",
+                    file=sys.stderr
+                )
             if args.no_cache:
                 print(
                     "[AVISO] --no-cache ignorado no modo --bench: o benchmark avalia ambos os regimes (ON e OFF).",
@@ -154,6 +164,7 @@ def main():
             resultados = rodar_benchmark(provider_factory=factory, max_turns=args.max_turns)
             imprimir_tabela(resultados)
         else:
+            tarefa_final = args.tarefa if args.tarefa is not None else "liste os arquivos desta pasta"
             provider = criar_provider(
                 provider_name=provider_name,
                 api_key=api_key,
@@ -161,7 +172,7 @@ def main():
                 base_url=os.environ.get("HARNESS_BASE_URL", None)
             )
             executar_loop(
-                tarefa=args.tarefa,
+                tarefa=tarefa_final,
                 provider=provider,
                 max_turns=args.max_turns,
                 contexto_projeto=contexto_conteudo,

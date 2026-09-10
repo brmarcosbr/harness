@@ -61,7 +61,7 @@ COMMAND_TIMEOUT_SECONDS = 30
 
 # Teto de poda do histórico; modelos atuais têm janela grande, o teto protege custo
 TETO_CONTEXTO_TOKENS = 100_000
-MAX_TURNOS_MANTER_PODA = 8
+MAX_TURNOS_MANTER_PODA = 4
 
 # Diretórios ignorados na busca e na geração de contexto do repositório
 DIRS_IGNORADOS = {".venv", "__pycache__", ".git", ".pytest_cache", "build", "dist"}
