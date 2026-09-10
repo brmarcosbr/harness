@@ -1,0 +1,50 @@
+name: readme-pair
+
+# Garante que o README.md e a sua tradução andem juntos.
+# Se um commit mexe em README.md e não mexe no par, a verificação falha.
+# Para uma mudança legítima de um lado só (ex.: corrigir um typo),
+# inclua [skip-readme-pair] na mensagem do commit.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  par-de-readmes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Verifica se README.md e a tradução andaram juntos
+        run: |
+          set -uo pipefail
+
+          MSG=$(git log -1 --pretty=%B)
+          if echo "$MSG" | grep -q '\[skip-readme-pair\]'; then
+            echo "Pulado: [skip-readme-pair] na mensagem do commit."
+            exit 0
+          fi
+
+          CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git show --name-only --pretty=format: HEAD)
+          echo "Alterados no commit:"
+          echo "$CHANGED" | sed 's/^/  /'
+
+          FALHOU=0
+          for par in README.pt-BR.md README.en.md; do
+            git ls-files --error-unmatch "$par" >/dev/null 2>&1 || continue
+            if echo "$CHANGED" | grep -qx "README.md" && ! echo "$CHANGED" | grep -qx "$par"; then
+              echo "::error file=README.md::README.md mudou sem '$par' no mesmo commit. Atualize a tradução ou use [skip-readme-pair]."
+              FALHOU=1
+            fi
+            if echo "$CHANGED" | grep -qx "$par" && ! echo "$CHANGED" | grep -qx "README.md"; then
+              echo "::error file=$par::$par mudou sem README.md no mesmo commit. Atualize o original ou use [skip-readme-pair]."
+              FALHOU=1
+            fi
+          done
+
+          if [ "$FALHOU" -eq 0 ]; then
+            echo "OK: o par de READMEs andou junto."
+          fi
+          exit $FALHOU
