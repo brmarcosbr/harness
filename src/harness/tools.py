@@ -416,27 +416,72 @@ def validar_comando_whitelist(
         if subcmd not in subcomandos_leitura:
             return f"Subcomando git não permitido: '{args[1]}'. Permitidos: status, diff, log, show, ls-files."
 
+        flags_perigosas = (
+            "--no-index", "--ext-diff", "--exec-path", "--paginate",
+            "--work-tree", "--git-dir", "--namespace", "--config-env",
+            "--upload-pack", "--receive-pack",
+        )
+
         for a in args[2:]:
+            a_lower = a.lower()
+            if a_lower in flags_perigosas or any(a_lower.startswith(f"{f}=") or a_lower == f for f in flags_perigosas):
+                return f"Flag perigosa não permitida no git: '{a}'."
+
+            if a_lower.startswith("--output") or a_lower.startswith("-o=") or a_lower == "-o":
+                return f"Redirecionamento de saída via flag git bloqueado: '{a}'."
+
+            if Path(a).is_absolute() or (len(a) >= 2 and a[1] == ":") or a.startswith(("/", "\\")):
+                return f"Caminho absoluto não permitido no git: '{a}'."
+
             partes = a.replace("\\", "/").split("/")
             if ".." in partes:
                 return f"Caminho não pode conter '..' (fora do projeto): '{a}'."
-            if caminho_protegido(a, modo="leitura"):
-                return f"Acesso a caminho protegido bloqueado no git: '{a}'."
+
+            # Se for revisão com caminho (ex: HEAD:.env ou commit:caminho)
+            if ":" in a and not a.startswith("-"):
+                rev_partes = a.split(":", 1)
+                caminho_rev = rev_partes[1]
+                if Path(caminho_rev).is_absolute() or (len(caminho_rev) >= 2 and caminho_rev[1] == ":") or caminho_rev.startswith(("/", "\\")):
+                    return f"Caminho absoluto não permitido no git: '{a}'."
+                if ".." in caminho_rev.replace("\\", "/").split("/"):
+                    return f"Caminho não pode conter '..' (fora do projeto): '{a}'."
+                if caminho_protegido(caminho_rev, modo="leitura"):
+                    return f"Acesso a caminho protegido bloqueado no git: '{a}'."
+                alvo_rev = (raiz / caminho_rev).resolve()
+                try:
+                    alvo_rev.relative_to(raiz)
+                except ValueError:
+                    return f"Caminho fora do diretório do projeto: '{a}'."
+            elif not a.startswith("-"):
+                if caminho_protegido(a, modo="leitura"):
+                    return f"Acesso a caminho protegido bloqueado no git: '{a}'."
+                alvo = (raiz / a).resolve()
+                try:
+                    alvo.relative_to(raiz)
+                except ValueError:
+                    return f"Caminho fora do diretório do projeto: '{a}'."
 
     elif executavel in {"type", "findstr", "where", "dir"}:
         if executavel == "type" and len(args) < 2:
             return "Comando type requer ao menos um arquivo: 'type <arquivo>'."
 
         for a in args[1:]:
-            # Ignora flags curtas de comando (como /b, /s, /i, -b, -n)
-            if (a.startswith("/") or a.startswith("-")) and len(a) <= 3 and a[1:].isalnum():
+            # Ignora flags de comando (como /b, -b, -n)
+            if a.startswith(("/", "-")):
                 continue
             partes = a.replace("\\", "/").split("/")
             if ".." in partes:
                 return f"Caminho não pode conter '..' (fora do projeto): '{a}'."
-            if Path(a).is_absolute() or (len(a) >= 2 and a[1] == ":"):
+            if Path(a).is_absolute() or (len(a) >= 2 and a[1] == ":") or a.startswith(("/", "\\")):
                 return f"Caminho absoluto não permitido: '{a}'."
             if caminho_protegido(a, modo="leitura"):
+                return f"Acesso a caminho protegido bloqueado: '{a}'."
+            alvo_cand = (raiz / a).resolve()
+            try:
+                alvo_cand.relative_to(raiz)
+            except ValueError:
+                return f"Caminho fora do diretório do projeto: '{a}'."
+            if caminho_protegido(alvo_cand, modo="leitura"):
                 return f"Acesso a caminho protegido bloqueado: '{a}'."
 
     elif executavel == "echo":
@@ -494,6 +539,20 @@ def executar_comando(comando: str, base_dir: Optional[Path] = None) -> Dict[str,
         conteudos = []
         for arq in args[1:]:
             alvo = (raiz / arq).resolve()
+            try:
+                alvo.relative_to(raiz)
+            except ValueError:
+                return {
+                    "stdout": "",
+                    "stderr": f"Acesso fora do diretório do projeto não permitido: {arq}",
+                    "codigo_saida": 1
+                }
+            if caminho_protegido(alvo, modo="leitura") or caminho_protegido(arq, modo="leitura"):
+                return {
+                    "stdout": "",
+                    "stderr": f"Acesso a caminho protegido bloqueado: {arq}",
+                    "codigo_saida": 1
+                }
             if not alvo.is_file():
                 return {
                     "stdout": "",
@@ -527,6 +586,22 @@ def executar_comando(comando: str, base_dir: Optional[Path] = None) -> Dict[str,
         caminhos_espec = [a for a in args[1:] if not a.startswith(("/", "-"))]
         if caminhos_espec:
             alvo_dir = (raiz / caminhos_espec[0]).resolve()
+
+        try:
+            alvo_dir.relative_to(raiz)
+        except ValueError:
+            return {
+                "stdout": "",
+                "stderr": f"Acesso fora do diretório do projeto não permitido: {caminhos_espec[0] if caminhos_espec else ''}",
+                "codigo_saida": 1
+            }
+
+        if caminho_protegido(alvo_dir, modo="leitura") or (caminhos_espec and caminho_protegido(caminhos_espec[0], modo="leitura")):
+            return {
+                "stdout": "",
+                "stderr": f"Acesso a caminho protegido bloqueado: {caminhos_espec[0] if caminhos_espec else ''}",
+                "codigo_saida": 1
+            }
 
         if not alvo_dir.exists():
             return {

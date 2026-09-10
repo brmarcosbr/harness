@@ -600,6 +600,78 @@ def test_invariante_sem_shell_true_em_tools():
     assert "shell=True" not in conteudo
 
 
+def test_git_validacao_argumentos_e_caminhos(tmp_path):
+    import subprocess
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True)
+    (tmp_path / "README.md").write_text("teste de git", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), capture_output=True)
+
+    # Argumentos proibidos
+    res1 = executar_comando("git diff --no-index /etc/passwd x", base_dir=tmp_path)
+    assert res1["codigo_saida"] == -1
+    assert "Flag perigosa" in res1["stderr"] or "não permitid" in res1["stderr"]
+
+    res2 = executar_comando("git log --output=/tmp/x -1", base_dir=tmp_path)
+    assert res2["codigo_saida"] == -1
+    assert "Redirecionamento" in res2["stderr"] or "bloqueado" in res2["stderr"]
+
+    res3 = executar_comando("git show --output=/tmp/x HEAD", base_dir=tmp_path)
+    assert res3["codigo_saida"] == -1
+    assert "Redirecionamento" in res3["stderr"] or "bloqueado" in res3["stderr"]
+
+    # Argumentos permitidos
+    res4 = executar_comando("git log --oneline -3", base_dir=tmp_path)
+    assert res4["codigo_saida"] == 0
+    assert "init" in res4["stdout"]
+
+    res5 = executar_comando("git diff --stat", base_dir=tmp_path)
+    assert res5["codigo_saida"] == 0
+
+
+def test_symlink_e_junction_traversal_bloqueado(tmp_path):
+    import os
+    raiz = tmp_path / "projeto"
+    raiz.mkdir()
+    fora = tmp_path / "externo"
+    fora.mkdir()
+    arquivo_secreto = fora / "secreto.txt"
+    arquivo_secreto.write_text("conteudo secreto", encoding="utf-8")
+
+    link_criado = False
+    # Tenta criar junction no Windows
+    try:
+        import _winapi
+        _winapi.CreateJunction(str(fora), str(raiz / "link_dir"))
+        link_criado = True
+    except Exception:
+        pass
+
+    # Tenta criar symlink no Linux/POSIX
+    if not link_criado:
+        try:
+            os.symlink(str(fora), str(raiz / "link_dir"))
+            link_criado = True
+        except OSError:
+            pass
+
+    if link_criado:
+        res_dir = executar_comando("dir link_dir", base_dir=raiz)
+        assert res_dir["codigo_saida"] != 0
+        assert "secreto.txt" not in res_dir["stdout"]
+
+        res_type = executar_comando("type link_dir/secreto.txt", base_dir=raiz)
+        assert res_type["codigo_saida"] != 0
+        assert "conteudo secreto" not in res_type["stdout"]
+
+        res_ler = ler_arquivo("link_dir/secreto.txt", base_dir=raiz)
+        assert res_ler["sucesso"] is False
+        assert res_ler["conteudo"] == ""
+
+
+
 
 
 
