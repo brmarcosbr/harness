@@ -1052,13 +1052,131 @@ def test_findstr_posix_fallback_limites(tmp_path, monkeypatch):
     assert len(linhas) == 50
 
 
+def test_filtro_fail_safe_git_diff_variacoes():
+    from harness.tools import _filtrar_saida_git
+
+    # 1. Diff com pasta com espaço e arquivo protegido entre aspas
+    diff_espaco = (
+        'diff --git "a/pasta dir/.env" "b/pasta dir/.env"\n'
+        'index 111..222 100644\n'
+        '--- "a/pasta dir/.env"\n'
+        '+++ "b/pasta dir/.env"\n'
+        '@@ -1 +1 @@\n'
+        '+SEGREDO_ESPACO=123\n'
+    )
+    saida_espaco = _filtrar_saida_git(diff_espaco)
+    assert "SEGREDO_ESPACO=123" not in saida_espaco
+    assert "[conteúdo de arquivo protegido omitido pela política de segurança]" in saida_espaco
+
+    # 2. Diff sem prefixo (--no-prefix) com arquivo protegido
+    diff_no_prefix = (
+        'diff --git .env .env\n'
+        'index 111..222 100644\n'
+        '--- .env\n'
+        '+++ .env\n'
+        '@@ -1 +1 @@\n'
+        '+SEGREDO_NO_PREFIX=456\n'
+    )
+    saida_no_prefix = _filtrar_saida_git(diff_no_prefix)
+    assert "SEGREDO_NO_PREFIX=456" not in saida_no_prefix
+    assert "[conteúdo de arquivo protegido omitido pela política de segurança]" in saida_no_prefix
+
+    # 3. Cabeçalho de diff malformado ou desconhecido -> fail-safe redige
+    diff_malformado = (
+        'diff --git estranho_sem_segundo_argumento\n'
+        '@@ -1 +1 @@\n'
+        '+DADOS_QUE_PODEM_SER_SENSIVEIS\n'
+    )
+    saida_malformado = _filtrar_saida_git(diff_malformado)
+    assert "DADOS_QUE_PODEM_SER_SENSIVEIS" not in saida_malformado
+    assert "fail-safe" in saida_malformado
+
+    # 4. Arquivo seguro com espaço passa intacto
+    diff_seguro = (
+        'diff --git "a/minha pasta/app.py" "b/minha pasta/app.py"\n'
+        'index 111..222 100644\n'
+        '--- "a/minha pasta/app.py"\n'
+        '+++ "b/minha pasta/app.py"\n'
+        '@@ -1 +1 @@\n'
+        '+print("ola mundo")\n'
+    )
+    saida_seguro = _filtrar_saida_git(diff_seguro)
+    assert '+print("ola mundo")' in saida_seguro
 
 
+def test_git_diff_sem_resumo_e_flags_prefixo_bloqueadas(tmp_path):
+    import subprocess
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True)
+
+    (tmp_path / "app.py").write_text("print('v1')", encoding="utf-8")
+    subprocess.run(["git", "add", "app.py"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "v1"], cwd=str(tmp_path), capture_output=True)
+
+    (tmp_path / "app.py").write_text("print('v2')", encoding="utf-8")
+
+    # git diff sem flag de resumo deve ser bloqueado
+    res_diff_puro = executar_comando("git diff", base_dir=tmp_path)
+    assert res_diff_puro["codigo_saida"] == -1
+    assert "sem flag de resumo bloqueado" in res_diff_puro["stderr"]
+
+    # git diff com resumo permitido
+    res_diff_stat = executar_comando("git diff --stat", base_dir=tmp_path)
+    assert res_diff_stat["codigo_saida"] == 0
+
+    # Flags de prefixo bloqueadas
+    res_no_prefix = executar_comando("git diff --stat --no-prefix", base_dir=tmp_path)
+    assert res_no_prefix["codigo_saida"] == -1
+    assert "Flag perigosa não permitida no git: '--no-prefix'" in res_no_prefix["stderr"]
+
+    res_src_prefix = executar_comando("git diff --stat --src-prefix=x/", base_dir=tmp_path)
+    assert res_src_prefix["codigo_saida"] == -1
+    assert "Flag perigosa não permitida no git: '--src-prefix=x/'" in res_src_prefix["stderr"]
+
+    res_dst_prefix = executar_comando("git diff --stat --dst-prefix=y/", base_dir=tmp_path)
+    assert res_dst_prefix["codigo_saida"] == -1
+    assert "Flag perigosa não permitida no git: '--dst-prefix=y/'" in res_dst_prefix["stderr"]
+
+    # Flags -c e --cc bloqueadas
+    res_cc = executar_comando("git diff --stat --cc", base_dir=tmp_path)
+    assert res_cc["codigo_saida"] == -1
+    assert "Flag de exibição de conteúdo/patch não permitida no git" in res_cc["stderr"]
 
 
+def test_findstr_validacao_estrita_argumentos_e_curingas(tmp_path):
+    (tmp_path / "teste.txt").write_text("linha de teste\n", encoding="utf-8")
 
+    # findstr requer ao menos 2 argumentos nao-flags
+    res_falta_alvo = executar_comando("findstr padrao", base_dir=tmp_path)
+    assert res_falta_alvo["codigo_saida"] == -1
+    assert "requer padrão de busca e ao menos um arquivo alvo" in res_falta_alvo["stderr"]
 
+    # findstr com curinga * bloqueado
+    res_wildcard_star = executar_comando("findstr padrao *", base_dir=tmp_path)
+    assert res_wildcard_star["codigo_saida"] == -1
+    assert "Curingas (* e ?) não são permitidos" in res_wildcard_star["stderr"]
 
+    # findstr com curinga ? bloqueado
+    res_wildcard_quest = executar_comando("findstr padrao teste?.txt", base_dir=tmp_path)
+    assert res_wildcard_quest["codigo_saida"] == -1
+    assert "Curingas (* e ?) não são permitidos" in res_wildcard_quest["stderr"]
 
+    # findstr com flags /s ou -s bloqueado
+    res_flag_s = executar_comando("findstr /s padrao teste.txt", base_dir=tmp_path)
+    assert res_flag_s["codigo_saida"] == -1
+    assert "Flag perigosa não permitida no findstr: '/s'" in res_flag_s["stderr"]
 
+    res_flag_s_dash = executar_comando("findstr -s padrao teste.txt", base_dir=tmp_path)
+    assert res_flag_s_dash["codigo_saida"] == -1
+    assert "Flag perigosa não permitida no findstr: '-s'" in res_flag_s_dash["stderr"]
 
+    # findstr com flags /f ou -f bloqueado
+    res_flag_f = executar_comando("findstr /f:lista.txt padrao teste.txt", base_dir=tmp_path)
+    assert res_flag_f["codigo_saida"] == -1
+    assert "Flag perigosa não permitida no findstr: '/f:lista.txt'" in res_flag_f["stderr"]
+
+    # findstr correto permitido
+    res_ok = executar_comando("findstr teste teste.txt", base_dir=tmp_path)
+    assert res_ok["codigo_saida"] == 0
+    assert "linha de teste" in res_ok["stdout"]

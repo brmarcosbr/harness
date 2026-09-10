@@ -540,8 +540,10 @@ def validar_comando_whitelist(
             "--no-index", "--ext-diff", "--exec-path", "--paginate",
             "--work-tree", "--git-dir", "--namespace", "--config-env",
             "--upload-pack", "--receive-pack",
+            "--no-prefix", "--src-prefix", "--dst-prefix",
+            "--diff-merges",
         )
-        flags_patch = ("-p", "-u", "--patch", "--textconv")
+        flags_patch = ("-p", "-u", "--patch", "--textconv", "-c", "--cc")
 
         for a in args[2:]:
             a_lower = a.lower()
@@ -572,14 +574,27 @@ def validar_comando_whitelist(
             if ".." in partes:
                 return f"Caminho não pode conter '..' (fora do projeto): '{a}'."
 
+        if subcmd == "diff":
+            flags_resumo_diff = {"--stat", "--name-only", "--name-status", "--no-patch", "-s"}
+            tem_resumo_diff = any(
+                a.lower() in flags_resumo_diff or any(a.lower().startswith(f"{f}=") for f in flags_resumo_diff)
+                for a in args[2:]
+            )
+            if not tem_resumo_diff:
+                return (
+                    "Comando 'git diff' sem flag de resumo bloqueado. "
+                    "Use flags de resumo (--stat, --name-only, --name-status, --no-patch, -s)."
+                )
+
         if subcmd == "show":
             flags_resumo = {"--stat", "--name-only", "--name-status", "--no-patch", "-s"}
             tem_resumo = any(
                 a.lower() in flags_resumo or any(a.lower().startswith(f"{f}=") for f in flags_resumo)
                 for a in args[2:]
             )
+            # O '--' isolado não conta como caminho específico; apenas referências commit:caminho
             tem_caminho_especifico = any(
-                (":" in a and not a.startswith("-")) or a == "--"
+                (":" in a and not a.startswith("-"))
                 for a in args[2:]
             )
             if not tem_resumo and not tem_caminho_especifico:
@@ -621,15 +636,6 @@ def validar_comando_whitelist(
             if flags_inv:
                 return f"Flag não suportada para 'dir': '{flags_inv[0]}'. O comando 'dir' suporta apenas a flag '/b'."
 
-        if executavel == "findstr":
-            for a in args[1:]:
-                a_lower = a.lower()
-                if (
-                    a_lower in ("/g", "-g", "/d", "-d")
-                    or a_lower.startswith(("/g:", "-g:", "/d:", "-d:"))
-                ):
-                    return f"Flag perigosa não permitida no findstr: '{a}'."
-
         if executavel == "where":
             for a in args[1:]:
                 a_lower = a.lower()
@@ -637,7 +643,23 @@ def validar_comando_whitelist(
                     return f"Flag perigosa não permitida no where: '{a}'."
 
         if executavel == "findstr":
+            flags_findstr_bloqueadas = ("/g", "-g", "/d", "-d", "/s", "-s", "/f", "-f")
+            for a in args[1:]:
+                a_lower = a.lower()
+                if (
+                    a_lower in flags_findstr_bloqueadas
+                    or any(a_lower.startswith(f"{f}:") for f in flags_findstr_bloqueadas)
+                ):
+                    return f"Flag perigosa não permitida no findstr: '{a}'."
+
             nao_flags = [a for a in args[1:] if not a.startswith(("/", "-"))]
+            if len(nao_flags) < 2:
+                return "Comando findstr requer padrão de busca e ao menos um arquivo alvo: 'findstr <padrão> <arquivo>'."
+
+            for a in nao_flags[1:]:
+                if "*" in a or "?" in a:
+                    return f"Curingas (* e ?) não são permitidos em alvos do findstr: '{a}'."
+
             caminhos_para_validar = nao_flags[1:]
         else:
             caminhos_para_validar = [a for a in args[1:] if not a.startswith(("/", "-"))]
@@ -659,10 +681,32 @@ def validar_comando_whitelist(
         # echo é permitido sem validação de caminhos (sem shell, metacaracteres não redirecionam)
         pass
 
+
+def _desescapar_caminho_git(p: str) -> str:
+    """
+    Remove aspas e desescapa sequências de escape do Git em caminhos citados.
+    Remove prefixos clássicos (a/, b/, i/, w/) se presentes.
+    """
+    p = p.strip()
+    if p.startswith('"') and p.endswith('"') and len(p) >= 2:
+        try:
+            import codecs
+            p = codecs.escape_decode(p[1:-1].encode("utf-8"))[0].decode("utf-8", errors="replace")
+        except Exception:
+            p = p[1:-1]
+
+    # Trata prefixos como a/, b/, i/, w/
+    if len(p) >= 2 and p[0] in ("a", "b", "i", "w") and p[1] == "/":
+        p = p[2:]
+    return p
+
+
 def _filtrar_saida_git(stdout: str) -> str:
     """
     Filtra blocos de saída de diff do git que contenham arquivos protegidos (ex.: .env commitado).
-    Redige o conteúdo sensível para evitar exfiltração.
+    Aplica política FAIL-SAFE: caso os caminhos do cabeçalho do diff não possam ser
+    identificados com certeza, ou caso algum caminho seja protegido, o conteúdo do bloco é redigido.
+    Apenas blocos cujos caminhos foram verificados com sucesso e são inofensivos são mantidos intactos.
     """
     if not stdout or "diff --git" not in stdout:
         return stdout
@@ -670,16 +714,51 @@ def _filtrar_saida_git(stdout: str) -> str:
     blocos = re.split(r"(?=^diff --git )", stdout, flags=re.MULTILINE)
     resultado = []
     for bloco in blocos:
-        m = re.match(r"^diff --git a/(\S+)\s+b/(\S+)", bloco)
-        if m:
-            caminho_a, caminho_b = m.group(1), m.group(2)
-            if caminho_protegido(caminho_a, modo="leitura") or caminho_protegido(caminho_b, modo="leitura"):
-                resultado.append(
-                    f"diff --git a/{caminho_a} b/{caminho_b}\n"
-                    f"[conteúdo de arquivo protegido omitido pela política de segurança]\n"
-                )
-                continue
+        if not bloco.startswith("diff --git "):
+            resultado.append(bloco)
+            continue
+
+        linhas = bloco.splitlines(keepends=True)
+        primeira_linha = linhas[0].rstrip("\r\n")
+        resto = primeira_linha[len("diff --git "):].strip()
+
+        # Casa caminhos com ou sem aspas, com ou sem espaços
+        m = re.match(r'^(?:"((?:[^"\\]|\\.)*)"|(\S+))\s+(?:"((?:[^"\\]|\\.)*)"|(\S+))$', resto)
+        if not m:
+            # FAIL-SAFE: formato de cabeçalho não reconhecido com certeza -> REDIGIR
+            resultado.append(
+                f"{primeira_linha}\n[conteúdo de diff omitido pela política de segurança (fail-safe)]\n"
+            )
+            continue
+
+        raw_a = m.group(1) if m.group(1) is not None else m.group(2)
+        raw_b = m.group(3) if m.group(3) is not None else m.group(4)
+        caminho_a = _desescapar_caminho_git(raw_a)
+        caminho_b = _desescapar_caminho_git(raw_b)
+
+        # Checa se qualquer dos caminhos é protegido
+        eh_protegido = caminho_protegido(caminho_a, modo="leitura") or caminho_protegido(caminho_b, modo="leitura")
+
+        # Checa adicionalmente linhas --- e +++ (defesa em profundidade)
+        if not eh_protegido:
+            for l in linhas[1:6]:
+                l_strip = l.strip()
+                if l_strip.startswith("--- ") or l_strip.startswith("+++ "):
+                    alvo_sub = l_strip[4:].strip()
+                    if alvo_sub and alvo_sub != "/dev/null":
+                        c_sub = _desescapar_caminho_git(alvo_sub)
+                        if caminho_protegido(c_sub, modo="leitura"):
+                            eh_protegido = True
+                            break
+
+        if eh_protegido:
+            resultado.append(
+                f"{primeira_linha}\n[conteúdo de arquivo protegido omitido pela política de segurança]\n"
+            )
+            continue
+
         resultado.append(bloco)
+
     return "".join(resultado)
 
 
