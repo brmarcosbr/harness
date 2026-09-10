@@ -6,6 +6,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from typing import Any, Callable, Dict, List, Literal, Optional, Set, Tuple, Union, overload
 import harness.config as config
 from harness.config import (
@@ -47,6 +49,8 @@ PADROES_BLOQUEADOS = [
 LIMITE_LEITURA_ARQUIVO_BYTES = 200 * 1024  # 200 KB
 LIMITE_ESCRITA_ARQUIVO_BYTES = 1024 * 1024  # 1 MB
 LIMITE_BUSCA_ARQUIVO_BYTES = 1024 * 1024    # 1 MB
+LIMITE_SUBPROCESSO_BYTES = 1024 * 1024      # 1 MB
+TEMPO_MAXIMO_BUSCA_SEGUNDOS = 10.0          # 10s
 MAX_BUSCA_RESULTADOS = 50
 LIMITE_TRUNCAMENTO_SAIDA = 4000
 
@@ -534,164 +538,74 @@ def validar_comando_whitelist(
 
     elif executavel == "git":
         if len(args) < 2:
-            return "Subcomando git ausente. Permitidos: status, diff, log, show, ls-files."
+            return "Subcomando git ausente. Permitidos apenas metadados: status, ls-files, log --oneline."
         subcmd = args[1].lower()
-        subcomandos_leitura = {"status", "diff", "log", "show", "ls-files"}
-        if subcmd not in subcomandos_leitura:
-            return f"Subcomando git não permitido: '{args[1]}'. Permitidos: status, diff, log, show, ls-files."
 
-        flags_perigosas = (
-            "--no-index", "--ext-diff", "--exec-path", "--paginate",
-            "--work-tree", "--git-dir", "--namespace", "--config-env",
-            "--upload-pack", "--receive-pack",
-            "--no-prefix", "--src-prefix", "--dst-prefix",
-            "--diff-merges",
-        )
-        flags_patch = (
-            "-p", "-u", "--patch", "--textconv", "-c", "--cc",
-            "--patch-with-stat", "--patch-with-raw", "--raw"
-        )
+        if subcmd in ("diff", "show"):
+            return (
+                f"Subcomando git não permitido: '{args[1]}'. Permitidos apenas metadados: "
+                "status, ls-files, log --oneline. Para ler arquivos use ler_arquivo."
+            )
 
-        for a in args[2:]:
-            a_lower = a.lower()
-            if (
-                a_lower in flags_perigosas
-                or any(a_lower.startswith(f"{f}=") or a_lower == f for f in flags_perigosas)
-                or a_lower == "--orderfile"
-                or a_lower.startswith("--orderfile=")
-                or a == "-O"
-                or a.startswith("-O=")
-                or (a.startswith("-O") and len(a) > 2 and not a[2].isspace())
-            ):
-                return f"Flag perigosa não permitida no git: '{a}'."
+        subcomandos_permitidos = {"status", "ls-files", "log"}
+        if subcmd not in subcomandos_permitidos:
+            return (
+                f"Subcomando git não permitido: '{args[1]}'. Permitidos apenas metadados: "
+                "status, ls-files, log --oneline."
+            )
 
-            if (
-                a_lower in flags_patch
-                or any(a_lower.startswith(f"{f}=") or a_lower == f for f in flags_patch)
-            ):
-                return f"Flag de exibição de conteúdo/patch não permitida no git: '{a}'."
+        if subcmd == "log":
+            tem_oneline = any(a.lower() == "--oneline" for a in args[2:])
+            if not tem_oneline:
+                return (
+                    "Comando 'git log' requer a flag '--oneline': "
+                    "'git log --oneline [-n <N>]'."
+                )
 
-            if a_lower.startswith("--output") or a_lower.startswith("-o=") or a_lower == "-o":
-                return f"Redirecionamento de saída via flag git bloqueado: '{a}'."
-
-            if Path(a).is_absolute() or (len(a) >= 2 and a[1] == ":") or a.startswith(("/", "\\")):
-                return f"Caminho absoluto não permitido no git: '{a}'."
-
-            partes = a.replace("\\", "/").split("/")
-            if ".." in partes:
-                return f"Caminho não pode conter '..' (fora do projeto): '{a}'."
-
-
-
-        for a in args[2:]:
-
-            # Se for revisão com caminho (ex: HEAD:.env ou commit:caminho)
-            if ":" in a and not a.startswith("-"):
-                rev_partes = a.split(":", 1)
-                caminho_rev = rev_partes[1]
-                if not caminho_rev:
-                    return f"Referência de objeto git inválida: '{a}'."
-                if Path(caminho_rev).is_absolute() or (len(caminho_rev) >= 2 and caminho_rev[1] == ":") or caminho_rev.startswith(("/", "\\")):
-                    return f"Caminho absoluto não permitido no git: '{a}'."
-                if ".." in caminho_rev.replace("\\", "/").split("/"):
-                    return f"Caminho não pode conter '..' (fora do projeto): '{a}'."
-                if caminho_protegido(caminho_rev, modo="leitura"):
-                    return f"Acesso a caminho protegido bloqueado no git: '{a}'."
-                try:
-                    alvo_rev = resolver_caminho_seguro(caminho_rev, base_dir=raiz, operacao="leitura")
-                except ValueError:
-                    return f"Caminho fora do diretório do projeto: '{a}'."
-                try:
-                    res_cat = subprocess.run(
-                        ["git", "cat-file", "-t", a],
-                        cwd=str(raiz),
-                        capture_output=True,
-                        text=True,
-                        timeout=5,
-                    )
-                    if res_cat.returncode == 0 and res_cat.stdout.strip() == "tree":
-                        return f"Objeto git do tipo tree não permitido no git: '{a}'."
-                except Exception as e:
-                    return f"Falha na verificação de segurança do objeto git: '{a}' ({e})."
-            elif not a.startswith("-"):
-                if a == "--":
+            # Permite apenas flags inócuas de uma linha e limite de commits
+            for a in args[2:]:
+                a_lower = a.lower()
+                if a_lower == "--oneline":
                     continue
+                if a_lower in ("-n", "--max-count"):
+                    continue
+                if a.isdigit() or (a.startswith("-") and a[1:].isdigit()):
+                    continue
+                return (
+                    f"Argumento não permitido para 'git log --oneline': '{a}'. "
+                    "Permitido apenas '-n <N>' ou '--max-count=<N>'."
+                )
+        else:
+            # Para status e ls-files:
+            flags_bloqueadas = (
+                "--output", "--work-tree", "--git-dir", "--namespace",
+                "--config-env", "-o=", "--exec-path", "--paginate"
+            )
+            for a in args[2:]:
+                a_lower = a.lower()
+                if (
+                    any(a_lower.startswith(f) or a_lower == f for f in flags_bloqueadas)
+                    or a_lower.startswith("-o")
+                ):
+                    return f"Flag perigosa ou redirecionamento não permitido no git: '{a}'."
+
+                if a.startswith("-"):
+                    continue
+
+                if Path(a).is_absolute() or (len(a) >= 2 and a[1] == ":") or a.startswith(("/", "\\")):
+                    return f"Caminho absoluto não permitido no git: '{a}'."
+
+                partes = a.replace("\\", "/").split("/")
+                if ".." in partes:
+                    return f"Caminho não pode conter '..' (fora do projeto): '{a}'."
+
                 if caminho_protegido(a, modo="leitura"):
                     return f"Acesso a caminho protegido bloqueado no git: '{a}'."
 
-                # Inspeciona se 'a' é um objeto git nu (blob, tree, commit, tag)
-                # Descasca tags recursivamente com ^{} para obter o tipo do objeto alvo final
-                e_objeto_git = False
                 try:
-                    res_cat = subprocess.run(
-                        ["git", "cat-file", "-t", f"{a}^{{}}"],
-                        cwd=str(raiz),
-                        capture_output=True,
-                        text=True,
-                        timeout=5,
-                    )
-                    if res_cat.returncode == 0:
-                        tipo_obj = res_cat.stdout.strip()
-                        if tipo_obj in ("blob", "tree"):
-                            return f"Objeto git nu (blob/tree) não permitido no git {subcmd}: '{a}'."
-                        if tipo_obj == "commit":
-                            e_objeto_git = True
-                        else:
-                            return f"Tipo de objeto git não permitido no git {subcmd}: '{a}'."
-                    else:
-                        # Fallback de checagem direta sem peel
-                        res_direct = subprocess.run(
-                            ["git", "cat-file", "-t", a],
-                            cwd=str(raiz),
-                            capture_output=True,
-                            text=True,
-                            timeout=5,
-                        )
-                        if res_direct.returncode == 0:
-                            tipo_direct = res_direct.stdout.strip()
-                            if tipo_direct in ("blob", "tree"):
-                                return f"Objeto git nu (blob/tree) não permitido no git {subcmd}: '{a}'."
-                            if tipo_direct == "commit":
-                                e_objeto_git = True
-                            else:
-                                return f"Tipo de objeto git não permitido no git {subcmd}: '{a}'."
-                except Exception as e:
-                    return f"Falha na verificação de segurança do objeto git: '{a}' ({e})."
-
-                if not e_objeto_git:
-                    try:
-                        alvo = resolver_caminho_seguro(a, base_dir=raiz, operacao="leitura")
-                    except ValueError:
-                        return f"Caminho fora do diretório do projeto: '{a}'."
-
-        if subcmd == "diff":
-            flags_resumo_diff = {"--stat", "--name-only", "--name-status", "--no-patch", "-s"}
-            tem_resumo_diff = any(
-                a.lower() in flags_resumo_diff or any(a.lower().startswith(f"{f}=") for f in flags_resumo_diff)
-                for a in args[2:]
-            )
-            if not tem_resumo_diff:
-                return (
-                    "Comando 'git diff' sem flag de resumo bloqueado. "
-                    "Use flags de resumo (--stat, --name-only, --name-status, --no-patch, -s)."
-                )
-
-        if subcmd == "show":
-            flags_resumo = {"--stat", "--name-only", "--name-status", "--no-patch", "-s"}
-            tem_resumo = any(
-                a.lower() in flags_resumo or any(a.lower().startswith(f"{f}=") for f in flags_resumo)
-                for a in args[2:]
-            )
-            # O '--' isolado não conta como caminho específico; apenas referências commit:caminho
-            tem_caminho_especifico = any(
-                (":" in a and not a.startswith("-"))
-                for a in args[2:]
-            )
-            if not tem_resumo and not tem_caminho_especifico:
-                return (
-                    f"Comando 'git show' sem arquivo específico requer flags de resumo "
-                    f"(--stat, --name-only, --name-status, --no-patch, -s): 'git show {' '.join(args[2:])}'."
-                )
+                    resolver_caminho_seguro(a, base_dir=raiz, operacao="leitura")
+                except ValueError:
+                    return f"Caminho fora do diretório do projeto: '{a}'."
 
     elif executavel in {"type", "findstr", "where", "dir"}:
         if executavel == "type" and len(args) < 2:
@@ -781,141 +695,152 @@ def _desescapar_caminho_git(p: str) -> str:
     return p
 
 
-def _filtrar_linha_resumo_git(linha: str) -> str:
+def _expandir_renomeacoes(texto: str) -> List[str]:
     """
-    Redige linhas de saída de resumo do git (--stat, --name-only, --name-status, raw)
-    que façam referência a arquivos protegidos (ex.: .env).
+    Expande possíveis renomeações de caminho do Git ({a => b}, a => b, a -> b)
+    retornando todos os caminhos candidatos (origem e destino).
     """
-    # 1. Checa formato --stat: '  .env | 1 +' ou '  path/to/.env | 2 +-'
-    m_stat = re.match(r"^(\s*)(.+?)\s*\|\s*(\d+|\bBin\b).*", linha)
-    if m_stat:
-        indent = m_stat.group(1)
-        alvo = m_stat.group(2).strip()
-        # Trata renomeação 'a => b' ou '{a => b}/c'
-        if "=>" in alvo:
-            partes_alvo = re.split(r"\s*=>\s*", alvo)
-            for p in partes_alvo:
-                p_limpo = _desescapar_caminho_git(p.strip("{ }"))
-                if caminho_protegido(p_limpo, modo="leitura"):
-                    return f"{indent}[arquivo protegido omitido pela política de segurança]\n"
-        else:
-            p_limpo = _desescapar_caminho_git(alvo)
-            if caminho_protegido(p_limpo, modo="leitura"):
-                return f"{indent}[arquivo protegido omitido pela política de segurança]\n"
-        return linha
+    candidatos: List[str] = []
+    m = re.search(r"(\S*)\{([^=>]*)=>\s*([^}]*)\}(\S*)", texto)
+    if m:
+        pref, left, right, suff = m.group(1).strip(), m.group(2).strip(), m.group(3).strip(), m.group(4).strip()
+        candidatos.extend([f"{pref}{left}{suff}", f"{pref}{right}{suff}"])
+    if "=>" in texto:
+        partes = [p.strip() for p in re.split(r"\s*=>\s*", texto)]
+        if len(partes) >= 2:
+            left_token = partes[0].split()[-1] if partes[0].split() else ""
+            right_token = partes[1].split()[0] if partes[1].split() else ""
+            candidatos.extend([left_token, right_token])
+    if "->" in texto:
+        partes = [p.strip() for p in re.split(r"\s*->\s*", texto)]
+        if len(partes) >= 2:
+            left_token = partes[0].split()[-1] if partes[0].split() else ""
+            right_token = partes[1].split()[0] if partes[1].split() else ""
+            candidatos.extend([left_token, right_token])
+    return [c for c in candidatos if c]
 
-    # 2. Checa formato --name-status ou --raw com tab
-    if "\t" in linha:
-        partes = linha.rstrip("\r\n").split("\t")
-        if any(caminho_protegido(_desescapar_caminho_git(p), modo="leitura") for p in partes[1:]):
-            return "[arquivo protegido omitido pela política de segurança]\n"
-        return linha
 
-    # 3. Checa formato --name-only (linha é exatamente o caminho)
+def _linha_toca_protegido_git(linha: str) -> bool:
+    """
+    Avalia se uma linha de saída de comando git cita algum caminho protegido
+    (como .env, .git, etc.), incluindo status, ls-files e log --oneline.
+    """
     linha_limpa = linha.strip()
-    if linha_limpa:
-        p_limpo = _desescapar_caminho_git(linha_limpa)
-        if caminho_protegido(p_limpo, modo="leitura"):
-            return "[arquivo protegido omitido pela política de segurança]\n"
+    if not linha_limpa:
+        return False
 
-    return linha
+    # 1. Checa expansões de renomeação na linha inteira
+    for c in _expandir_renomeacoes(linha_limpa):
+        if caminho_protegido(_desescapar_caminho_git(c), modo="leitura"):
+            return True
+
+    # 2. Se houver prefixos como 'modified: caminho' ou 'deleted: caminho'
+    if ":" in linha_limpa:
+        c_resto = linha_limpa.split(":", 1)[1].strip()
+        if caminho_protegido(_desescapar_caminho_git(c_resto), modo="leitura"):
+            return True
+        for c in _expandir_renomeacoes(c_resto):
+            if caminho_protegido(_desescapar_caminho_git(c), modo="leitura"):
+                return True
+
+    # 3. Varrer cada token individual separado por espaços ou tabs
+    for t in re.split(r"[\t\s]+", linha_limpa):
+        t_limpo = t.strip("\"'`,:")
+        if caminho_protegido(_desescapar_caminho_git(t_limpo), modo="leitura"):
+            return True
+        for c in _expandir_renomeacoes(t_limpo):
+            if caminho_protegido(_desescapar_caminho_git(c), modo="leitura"):
+                return True
+
+    return False
 
 
 def _filtrar_saida_git(stdout: str) -> str:
     """
-    Filtra blocos de saída de diff e resumos do git que contenham arquivos protegidos (ex.: .env).
-    Aplica política FAIL-SAFE:
-    - Se a saída contiver blocos de diff (^diff --), cada bloco é verificado e redigido
-      caso contenha arquivos protegidos ou formato desconhecido.
-    - Linhas de resumo (--stat, --name-only, --name-status, raw) são redigidas para não
-      vazar nomes ou metadados de arquivos protegidos.
+    Filtra a saída textual dos subcomandos git permitidos (status, ls-files, log --oneline).
+    Omite completamente qualquer linha que mencione ou cite arquivos protegidos.
     """
     if not stdout:
         return stdout
 
-    if "diff --" in stdout:
-        blocos = re.split(r"(?=^diff --)", stdout, flags=re.MULTILINE)
-        resultado = []
-        for bloco in blocos:
-            if not bloco.startswith("diff --"):
-                linhas_resumo = [
-                    _filtrar_linha_resumo_git(l)
-                    for l in bloco.splitlines(keepends=True)
-                ]
-                resultado.append("".join(linhas_resumo))
-                continue
+    linhas = stdout.splitlines(keepends=True)
+    return "".join(l for l in linhas if not _linha_toca_protegido_git(l))
 
-            linhas = bloco.splitlines(keepends=True)
-            primeira_linha = linhas[0].rstrip("\r\n")
 
-            eh_protegido = False
-            if primeira_linha.startswith("diff --git "):
-                resto = primeira_linha[len("diff --git "):].strip()
-                m = re.match(r'^(?:"((?:[^"\\]|\\.)*)"|(\S+))\s+(?:"((?:[^"\\]|\\.)*)"|(\S+))$', resto)
-                if not m:
-                    # FAIL-SAFE: formato de cabeçalho não reconhecido com certeza -> REDIGIR
-                    resultado.append(
-                        f"{primeira_linha}\n[conteúdo de diff omitido pela política de segurança (fail-safe)]\n"
-                    )
-                    continue
+def _executar_subprocesso_com_limite(
+    args_exec: List[str],
+    cwd: str,
+    env: Dict[str, str],
+    timeout: int,
+    limite_bytes: int = LIMITE_SUBPROCESSO_BYTES,
+) -> Tuple[str, str, int]:
+    """
+    Executa comando em subprocesso (shell=False) lendo saídas com teto de memória.
+    Lê stdout e stderr em chunks sem bufferizar dados além de limite_bytes.
+    """
+    proc = subprocess.Popen(
+        args_exec,
+        shell=False,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    stdout_chunks: List[bytes] = []
+    stderr_chunks: List[bytes] = []
+    flags = {"stdout_truncado": False, "stderr_truncado": False}
 
-                raw_a = m.group(1) if m.group(1) is not None else m.group(2)
-                raw_b = m.group(3) if m.group(3) is not None else m.group(4)
-                caminho_a = _desescapar_caminho_git(raw_a)
-                caminho_b = _desescapar_caminho_git(raw_b)
-                if caminho_protegido(caminho_a, modo="leitura") or caminho_protegido(caminho_b, modo="leitura"):
-                    eh_protegido = True
+    def _reader(pipe, chunks: List[bytes], flag_chave: str):
+        total = 0
+        try:
+            while True:
+                chunk = pipe.read(64 * 1024)
+                if not chunk:
+                    break
+                if not flags[flag_chave]:
+                    if total + len(chunk) > limite_bytes:
+                        sobra = limite_bytes - total
+                        if sobra > 0:
+                            chunks.append(chunk[:sobra])
+                        flags[flag_chave] = True
+                    else:
+                        chunks.append(chunk)
+                        total += len(chunk)
+        except Exception:
+            pass
+        finally:
+            try:
+                pipe.close()
+            except Exception:
+                pass
 
-            elif primeira_linha.startswith(("diff --cc ", "diff --combined ")):
-                prefixo_len = len("diff --cc ") if primeira_linha.startswith("diff --cc ") else len("diff --combined ")
-                resto = primeira_linha[prefixo_len:].strip()
-                m = re.match(r'^(?:"((?:[^"\\]|\\.)*)"|(\S+))$', resto)
-                if not m:
-                    resultado.append(
-                        f"{primeira_linha}\n[conteúdo de diff omitido pela política de segurança (fail-safe)]\n"
-                    )
-                    continue
-                raw_path = m.group(1) if m.group(1) is not None else m.group(2)
-                caminho_cc = _desescapar_caminho_git(raw_path)
-                if caminho_protegido(caminho_cc, modo="leitura"):
-                    eh_protegido = True
-            else:
-                # Formato de diff desconhecido -> FAIL-SAFE
-                resultado.append(
-                    f"{primeira_linha}\n[conteúdo de diff omitido pela política de segurança (fail-safe)]\n"
-                )
-                continue
+    t_out = threading.Thread(target=_reader, args=(proc.stdout, stdout_chunks, "stdout_truncado"))
+    t_err = threading.Thread(target=_reader, args=(proc.stderr, stderr_chunks, "stderr_truncado"))
+    t_out.daemon = True
+    t_err.daemon = True
+    t_out.start()
+    t_err.start()
 
-            # Checa adicionalmente linhas --- e +++ até o início do hunk (@@)
-            if not eh_protegido:
-                for l in linhas[1:]:
-                    l_strip = l.strip()
-                    if l_strip.startswith("@@"):
-                        break
-                    if l_strip.startswith("--- ") or l_strip.startswith("+++ "):
-                        alvo_sub = l_strip[4:].strip()
-                        if alvo_sub and alvo_sub != "/dev/null":
-                            c_sub = _desescapar_caminho_git(alvo_sub)
-                            if caminho_protegido(c_sub, modo="leitura"):
-                                eh_protegido = True
-                                break
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        t_out.join(timeout=1.0)
+        t_err.join(timeout=1.0)
+        raise
 
-            if eh_protegido:
-                resultado.append(
-                    f"{primeira_linha}\n[conteúdo de arquivo protegido omitido pela política de segurança]\n"
-                )
-                continue
+    t_out.join(timeout=2.0)
+    t_err.join(timeout=2.0)
 
-            resultado.append(bloco)
+    out_str = b"".join(stdout_chunks).decode("utf-8", errors="replace")
+    err_str = b"".join(stderr_chunks).decode("utf-8", errors="replace")
 
-        return "".join(resultado)
-    else:
-        # Sem diffs: filtra linhas de resumo
-        linhas_resumo = [
-            _filtrar_linha_resumo_git(l)
-            for l in stdout.splitlines(keepends=True)
-        ]
-        return "".join(linhas_resumo)
+    if flags["stdout_truncado"]:
+        out_str += f"\n[... saída de stdout truncada no limite de segurança de {limite_bytes // 1024} KB]"
+    if flags["stderr_truncado"]:
+        err_str += f"\n[... saída de stderr truncada no limite de segurança de {limite_bytes // 1024} KB]"
+
+    return out_str, err_str, proc.returncode
 
 
 def executar_comando(comando: str, base_dir: Optional[Path] = None) -> Dict[str, Any]:
@@ -1137,31 +1062,26 @@ def executar_comando(comando: str, base_dir: Optional[Path] = None) -> Dict[str,
             return {"stdout": "\n".join(linhas_match) + "\n", "stderr": "", "codigo_saida": 0}
         return {"stdout": "", "stderr": "", "codigo_saida": 1}
 
-    # 6. Execução via subprocess sem shell (shell=False)
+    # 6. Execução via subprocess sem shell (shell=False) com teto de memória de 1 MB
     args_exec = list(args)
     if executavel == "python":
         args_exec[0] = sys.executable
 
     try:
-        resultado = subprocess.run(
-            args_exec,
-            shell=False,
+        stdout_final, stderr_final, rc = _executar_subprocesso_com_limite(
+            args_exec=args_exec,
             cwd=str(raiz),
-            capture_output=True,
-            text=True,
+            env=obter_env_saneado(),
             timeout=COMMAND_TIMEOUT_SECONDS,
-            encoding="utf-8",
-            errors="replace",
-            env=obter_env_saneado()
+            limite_bytes=LIMITE_SUBPROCESSO_BYTES
         )
-        stdout_final = resultado.stdout
         if executavel == "git":
             stdout_final = _filtrar_saida_git(stdout_final)
 
         return {
             "stdout": stdout_final,
-            "stderr": resultado.stderr,
-            "codigo_saida": resultado.returncode
+            "stderr": stderr_final,
+            "codigo_saida": rc
         }
     except subprocess.TimeoutExpired:
         return {
@@ -1236,9 +1156,11 @@ def escrever_arquivo(caminho: str, conteudo: str, base_dir: Optional[Path] = Non
 
 def _padrao_tem_risco_redos(padrao: str) -> bool:
     """Detecta padrões regex suscetíveis a ReDoS (quantificador aninhado ou alternância repetida)."""
-    if re.search(r"\([^)]*[\+\*\{][^)]*\)[\+\*\{]", padrao):
+    if re.search(r"\([^)]*[\+\*\?\{][^)]*\)[\+\*\?\{]", padrao):
         return True
-    if re.search(r"\([^)]*\|[^)]*\)[\+\*\{]", padrao):
+    if re.search(r"\)[\+\*\?\{][^)]*\)[\+\*\?\{]", padrao):
+        return True
+    if re.search(r"\([^)]*\|[^)]*\)[\+\*\?\{]", padrao):
         return True
     return False
 
@@ -1277,8 +1199,17 @@ def buscar_no_projeto(
         ext_filtro = f".{ext_filtro}"
 
     resultados: List[str] = []
+    t_inicio = time.time()
 
     for root, dirs, files in os.walk(raiz):
+        if time.time() - t_inicio > TEMPO_MAXIMO_BUSCA_SEGUNDOS:
+            return {
+                "sucesso": True,
+                "total": len(resultados),
+                "limite_atingido": True,
+                "aviso": f"Busca interrompida após atingir tempo limite de {TEMPO_MAXIMO_BUSCA_SEGUNDOS}s.",
+                "resultados": resultados
+            }
         # Ignora pastas proibidas e protegidas in-place com validação de caminho seguro
         dirs_validos = []
         for d in dirs:
@@ -1293,6 +1224,14 @@ def buscar_no_projeto(
         dirs[:] = dirs_validos
 
         for file in files:
+            if time.time() - t_inicio > TEMPO_MAXIMO_BUSCA_SEGUNDOS:
+                return {
+                    "sucesso": True,
+                    "total": len(resultados),
+                    "limite_atingido": True,
+                    "aviso": f"Busca interrompida após atingir tempo limite de {TEMPO_MAXIMO_BUSCA_SEGUNDOS}s.",
+                    "resultados": resultados
+                }
             p = Path(root) / file
             try:
                 alvo_seguro, caminho_rel = resolver_caminho_seguro(
@@ -1346,7 +1285,7 @@ TOOLS: List[Dict[str, Any]] = [
         "name": "executar_comando",
         "description": (
             "Executa comandos estritamente permitidos por whitelist sem shell no diretório do projeto. "
-            "Permitidos: dir, type <arquivo>, python <arquivo>.py, git status|diff|log|show|ls-files, "
+            "Permitidos: dir, type <arquivo>, python <arquivo>.py, git status|ls-files|log --oneline, "
             "findstr <padrao> <arquivo>, where <executavel>, echo <texto>. "
             "Para ler, editar e buscar arquivos, prefira as ferramentas dedicadas ler_arquivo, "
             "escrever_arquivo e buscar_no_projeto. Retorna stdout, stderr e codigo_saida."

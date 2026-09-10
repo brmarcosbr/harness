@@ -18,7 +18,7 @@ from harness.contexto import (
 )
 from harness.errors import HarnessError
 from harness.providers import Provider
-from harness.tools import TOOL_REGISTRY, executar_comando, truncar_saida
+from harness.tools import TOOL_REGISTRY, TOOLS, executar_comando, truncar_saida
 from harness.usage import calcular_custo
 
 
@@ -167,26 +167,50 @@ def executar_loop(
                 tool_func = TOOL_REGISTRY.get(func_name)
 
                 if tool_func is not None:
-                    print(f"[Tool Exec] Executando '{func_name}' com args: {func_args}")
-                    try:
-                        # Passa func_args como kwargs se for dict
-                        if isinstance(func_args, dict):
-                            resultado_raw = tool_func(**func_args)
+                    # Validação de kwargs contra o schema declarado em TOOLS
+                    tool_def = next((t for t in TOOLS if t.get("name") == func_name), None)
+                    propriedades_permitidas = None
+                    if tool_def and isinstance(tool_def.get("parameters"), dict):
+                        props = tool_def["parameters"].get("properties")
+                        if isinstance(props, dict):
+                            propriedades_permitidas = set(props.keys())
+
+                    chaves_invalidas = set()
+                    if propriedades_permitidas is not None and isinstance(func_args, dict):
+                        chaves_invalidas = set(func_args.keys()) - propriedades_permitidas
+
+                    if chaves_invalidas:
+                        msg_invalida = (
+                            f"Argumento não permitido pelo schema da ferramenta '{func_name}': "
+                            f"{', '.join(sorted(chaves_invalidas))}. "
+                            f"Propriedades permitidas: {sorted(propriedades_permitidas)}"
+                        )
+                        print(f"[Tool Error] {msg_invalida}")
+                        if func_name == "executar_comando":
+                            resultado_raw = {"stdout": "", "stderr": msg_invalida, "codigo_saida": -1}
                         else:
-                            resultado_raw = tool_func(func_args)
-                    except TypeError as e:
-                        msg_err = str(e).lower()
-                        termos_assinatura = ("unexpected keyword", "missing", "required", "takes")
-                        if any(termo in msg_err for termo in termos_assinatura):
-                            # Fallback se a assinatura esperar comando posicional
-                            if "comando" in func_args and len(func_args) == 1:
-                                resultado_raw = tool_func(func_args["comando"])
+                            resultado_raw = {"sucesso": False, "erro": msg_invalida}
+                    else:
+                        print(f"[Tool Exec] Executando '{func_name}' com args: {func_args}")
+                        try:
+                            # Passa func_args como kwargs se for dict
+                            if isinstance(func_args, dict):
+                                resultado_raw = tool_func(**func_args)
                             else:
-                                resultado_raw = {"sucesso": False, "erro": f"Argumentos inválidos para a função {func_name}: {func_args}"}
-                        else:
-                            raise HarnessError(f"Erro interno na execução da tool '{func_name}': {e}") from e
-                    except Exception as e:
-                        resultado_raw = {"sucesso": False, "erro": f"Erro na execução da tool '{func_name}': {e}"}
+                                resultado_raw = tool_func(func_args)
+                        except TypeError as e:
+                            msg_err = str(e).lower()
+                            termos_assinatura = ("unexpected keyword", "missing", "required", "takes")
+                            if any(termo in msg_err for termo in termos_assinatura):
+                                # Fallback se a assinatura esperar comando posicional
+                                if "comando" in func_args and len(func_args) == 1:
+                                    resultado_raw = tool_func(func_args["comando"])
+                                else:
+                                    resultado_raw = {"sucesso": False, "erro": f"Argumentos inválidos para a função {func_name}: {func_args}"}
+                            else:
+                                raise HarnessError(f"Erro interno na execução da tool '{func_name}': {e}") from e
+                        except Exception as e:
+                            resultado_raw = {"sucesso": False, "erro": f"Erro na execução da tool '{func_name}': {e}"}
 
                     # Trunca saídas da tool para controle de contexto
                     resultado_tool = _processar_e_truncar_resultado(resultado_raw)

@@ -322,6 +322,62 @@ def test_loop_resposta_com_aviso_truncamento_nao_marca_concluido(capsys):
     assert resultado.historico[0]["role"] == "user"
 
 
+def test_loop_rejeita_kwargs_fora_do_schema():
+    # 1. Teste com executar_comando recebendo argumento não declarado no schema (ex: base_dir)
+    resp1 = ProviderResponse(
+        text="",
+        tool_calls=[{
+            "id": "call_invalida_cmd",
+            "name": "executar_comando",
+            "args": {"comando": "dir", "base_dir": "/tentativa/escape"}
+        }],
+        usage={"prompt": 40, "completion": 20, "total": 60, "cached": 0},
+        modelo="fake-model"
+    )
+    resp2 = ProviderResponse(
+        text="Erro tratado com sucesso.",
+        tool_calls=[],
+        usage={"prompt": 50, "completion": 10, "total": 60, "cached": 0},
+        modelo="fake-model"
+    )
+
+    provider = FakeProvider(respostas=[resp1, resp2])
+    resultado = executar_loop(tarefa="teste schema kwargs", provider=provider, max_turns=3)
+
+    tool_msg = next(m for m in resultado.historico if m.get("role") == "tool" and m.get("tool_call_id") == "call_invalida_cmd")
+    res_tool = tool_msg["resultado"]
+    assert res_tool["codigo_saida"] == -1
+    assert "Argumento não permitido pelo schema da ferramenta 'executar_comando'" in res_tool["stderr"]
+    assert "base_dir" in res_tool["stderr"]
+
+    # 2. Teste com ler_arquivo recebendo propriedade inexistente
+    resp_ler1 = ProviderResponse(
+        text="",
+        tool_calls=[{
+            "id": "call_invalida_ler",
+            "name": "ler_arquivo",
+            "args": {"caminho": "app.py", "opcao_extra": True}
+        }],
+        usage={"prompt": 40, "completion": 20, "total": 60, "cached": 0},
+        modelo="fake-model"
+    )
+    resp_ler2 = ProviderResponse(
+        text="Erro tratado.",
+        tool_calls=[],
+        usage={"prompt": 50, "completion": 10, "total": 60, "cached": 0},
+        modelo="fake-model"
+    )
+
+    provider_ler = FakeProvider(respostas=[resp_ler1, resp_ler2])
+    resultado_ler = executar_loop(tarefa="teste ler_arquivo kwargs", provider=provider_ler, max_turns=3)
+
+    tool_msg_ler = next(m for m in resultado_ler.historico if m.get("role") == "tool" and m.get("tool_call_id") == "call_invalida_ler")
+    res_tool_ler = tool_msg_ler["resultado"]
+    assert res_tool_ler["sucesso"] is False
+    assert "Argumento não permitido pelo schema da ferramenta 'ler_arquivo'" in res_tool_ler["erro"]
+    assert "opcao_extra" in res_tool_ler["erro"]
+
+
 
 
 

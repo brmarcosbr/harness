@@ -123,17 +123,18 @@ Quando a flag `--no-cache` é fornecida, um cabeçalho dinâmico contendo timest
 
 O harness disponibiliza 4 ferramentas nativas para o modelo:
 
-1. `executar_comando`: Execução de comandos controlados por whitelist sem shell (`shell=False`) no diretório do projeto.
+1. `executar_comando`: Execução de comandos controlados por whitelist sem shell (`shell=False`) no diretório do projeto, com teto de saída de subprocessos em 1 MB.
 2. `ler_arquivo`: Leitura de arquivos de texto com limite máximo de 200 KB por arquivo.
 3. `escrever_arquivo`: Criação e sobrescrita de arquivos com limite de 1 MB.
-4. `buscar_no_projeto`: Busca por padrão regex no conteúdo dos arquivos de código/texto do projeto (ignora pastas `.venv`, `__pycache__`, `.git`, `.pytest_cache`, `build` e `dist`; permite filtro por extensão opcional; ignora binários e arquivos maiores que 1 MB; limite máximo de 50 resultados). **Não** busca por nome de arquivo.
+4. `buscar_no_projeto`: Busca por padrão regex no conteúdo dos arquivos de código/texto do projeto (ignora pastas `.venv`, `__pycache__`, `.git`, `.pytest_cache`, `build` e `dist`; permite filtro por extensão opcional; ignora binários e arquivos maiores que 1 MB; limite máximo de 50 resultados; timeout de 10 segundos e proteção ReDoS estendida). **Não** busca por nome de arquivo.
 
 - **Blocklist de Comandos Críticos:** Bloqueio via regex dos padrões perigosos mapeados em `PADROES_BLOQUEADOS`: `format`, `diskpart`, `shutdown`, `rd /s` (ou `/q`), `rmdir /s` (ou `/q`), `rm -rf`, `reg delete`, `del /s` (ou `/f` ou `/q`), `erase /s` (ou `/f` ou `/q`), `cipher /w` e `taskkill /f /im`.
 - **Caminhos Protegidos Configuráveis (`CAMINHOS_PROTEGIDOS`):** Centralizados em `config.py` e verificados pela função autoritativa `resolver_caminho_seguro`:
   - `bloqueio_total` (leitura e escrita bloqueadas): `.env` (bloqueando `.env`, `.env.*` e `.env_*`, com exceção segura para templates como `.env.example`, `.env.sample` e `.env.template`) e `.git/` (todos os objetos, configs e referências do repositório);
   - `somente_escrita` (leitura permitida se necessário, escrita categoricamente bloqueada): `.github/` (protege workflows do GitHub Actions e arquivos de automação contra sobrescrita ou corrupção pelo modelo).
 - **Proteção contra Path Traversal e Symlink Escape:** Validação estrita via `resolver_caminho_seguro` garantindo que nenhum caminho acesse pastas superiores à raiz do projeto (`..` proibido) ou escape da árvore do projeto através de symlinks ou NTFS junctions.
-- **Timeouts Rígidos:** Cada execução de comando possui limite padrão de 30 segundos, prevenindo bloqueios em processos interativos ou loops infinitos.
+- **Timeouts e Tetos de Memória Rígidos:** Cada execução de comando possui limite padrão de 30 segundos e leitura em chunks limitada a no máximo 1 MB de saída em subprocessos, prevenindo bloqueios ou estouro de memória por scripts ruidosos. A busca em arquivos é limitada a 10 segundos.
+- **Validação de Kwargs no Loop contra o Schema:** No despacho das ferramentas pelo loop, qualquer argumento não declarado expressamente no schema canônico (`TOOLS`) é sumariamente rejeitado antes da execução, impedindo injeção de parâmetros espúrios (`base_dir`, etc.).
 - **Proteção Multiplataforma via Whitelist:** A execução de processos sem shell (`shell=False`) e restrita à whitelist de binários permitidos impede a execução de comandos destrutivos tanto no Windows (`cmd.exe`) quanto em ambientes POSIX/Linux (`rm -rf`, `mkfs`, etc.). Handlers nativos como `type`, `dir`, `where` e `findstr` contam com emulação transparente em Python para portabilidade integral.
 
 ### Limites Conhecidos da Blocklist (Mitigação vs. Sandboxing)
@@ -155,18 +156,18 @@ A combinação de blocklist de comandos, inspeção de redirecionamentos, prote�
 
 ## Política de Execução de Comandos
 
-A partir do Marco W7, o harness adota uma **política de execução estrita por whitelist sem shell (`shell=False`)**, eliminando a interpretação gramatical do shell como vetor de ataque e evasão.
+A partir do Marco W7 (e consolidação W7.7), o harness adota uma **política de execução estrita por whitelist sem shell (`shell=False`)**, eliminando a interpretação gramatical do shell como vetor de ataque e evasão.
 
 ### Arquitetura em Duas Camadas
 
 1. **Camada Primária (Whitelist sem Shell):**
-   - **Execução sem Interpretador (`shell=False`):** O harness invoca executáveis externos diretamente via `subprocess.run(..., shell=False)`. Não há passagem por `cmd.exe` ou `sh`. Metacaracteres como `|`, `&`, `;`, `>`, `<`, `$VAR` e `%VAR%` não são interpretados pelo sistema operacional, sendo tratados estritamente como argumentos literais ou rejeitados.
+   - **Execução sem Interpretador (`shell=False`):** O harness invoca executáveis externos diretamente via subprocesso sem shell. Não há passagem por `cmd.exe` ou `sh`. Metacaracteres como `|`, `&`, `;`, `>`, `<`, `$VAR` e `%VAR%` não são interpretados pelo sistema operacional, sendo tratados estritamente como argumentos literais ou rejeitados.
    - **Tokenizador Próprio (`_tokenizar`):** Divide a linha de comando por espaços respeitando aspas simples e duplas (o conteúdo entre aspas torna-se um único token sem as aspas envolventes), rejeitando comandos com aspas desbalanceadas antes de qualquer execução.
    - **Executáveis Autorizados (`COMANDOS_PERMITIDOS`):**
      - `dir`: Inspeção de diretórios do projeto (executada nativamente em Python para evitar dependência do shell).
      - `type`: Leitura rápida de arquivos (executada nativamente com validação de caminhos e bloqueio a arquivos protegidos).
      - `python`: Execução estrita de scripts Python dentro do projeto (`python <arquivo>.py`). Flags de interpretação inline (`-c`, `-m`, `-i`), referências com `..` e caminhos absolutos são categoricamente bloqueados.
-     - `git`: Apenas subcomandos de leitura informativa (`status`, `diff`, `log`, `show`, `ls-files`). Subcomandos mutantes ou destrutivos (`clean`, `reset`, `push`, `checkout`, `commit`, etc.) são rejeitados.
+     - `git`: **Metadados Puros Apenas** (`git status`, `git ls-files` e `git log --oneline`). Subcomandos que exibem conteúdo ou diffs (`diff`, `show`, `log -p`, `--stat`, `--patch`, etc.) foram completamente eliminados do whitelist para erradicar vetores de exfiltração de arquivos protegidos; saídas de metadados têm linhas que citam arquivos protegidos (incluindo padrões de renomeação `{old => new}`) integralmente omitidas por um redator de linha única.
      - `findstr`: Busca textual rápida (com fallback transparente em plataformas não-Windows, atuando como busca por substring direta em arquivos sem suporte a flags avançadas do findstr nativo do Windows).
      - `where`: Localização de executáveis seguros no PATH (com fallback cross-platform via `shutil.which`, tratando automaticamente o mapeamento de `python` para `python3` caso necessário).
      - `echo`: Impressão de texto no terminal (sem permitir redirecionamento via shell).

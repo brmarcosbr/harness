@@ -618,8 +618,8 @@ def test_executar_comando_whitelist_tabela_permitidos(tmp_path):
     assert res_git_status["codigo_saida"] == 0
     assert "branch" in res_git_status["stdout"].lower() or "working tree clean" in res_git_status["stdout"].lower()
 
-    # git log (no repo temporário isolado)
-    res_git_log = executar_comando("git log -n 1", base_dir=tmp_path)
+    # git log --oneline (no repo temporário isolado)
+    res_git_log = executar_comando("git log --oneline -n 1", base_dir=tmp_path)
     assert res_git_log["codigo_saida"] == 0
     assert "commit inicial de teste" in res_git_log["stdout"]
 
@@ -670,25 +670,31 @@ def test_git_validacao_argumentos_e_caminhos(tmp_path):
     subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), capture_output=True)
 
-    # Argumentos proibidos
-    res1 = executar_comando("git diff --no-index /etc/passwd x", base_dir=tmp_path)
-    assert res1["codigo_saida"] == -1
-    assert "Flag perigosa" in res1["stderr"] or "não permitid" in res1["stderr"]
+    # Subcomandos agora completamente proibidos (diff e show)
+    res_diff = executar_comando("git diff", base_dir=tmp_path)
+    assert res_diff["codigo_saida"] == -1
+    assert "Subcomando git não permitido: 'diff'" in res_diff["stderr"]
 
-    res2 = executar_comando("git log --output=/tmp/x -1", base_dir=tmp_path)
-    assert res2["codigo_saida"] == -1
-    assert "Redirecionamento" in res2["stderr"] or "bloqueado" in res2["stderr"]
+    res_show = executar_comando("git show HEAD", base_dir=tmp_path)
+    assert res_show["codigo_saida"] == -1
+    assert "Subcomando git não permitido: 'show'" in res_show["stderr"]
 
-    res3 = executar_comando("git show --output=/tmp/x HEAD", base_dir=tmp_path)
-    assert res3["codigo_saida"] == -1
-    assert "Redirecionamento" in res3["stderr"] or "bloqueado" in res3["stderr"]
+    # git log sem --oneline é bloqueado
+    res_log_sem_oneline = executar_comando("git log -1", base_dir=tmp_path)
+    assert res_log_sem_oneline["codigo_saida"] == -1
+    assert "requer a flag '--oneline'" in res_log_sem_oneline["stderr"]
+
+    # Redirecionamento ou flags não permitidas
+    res_log_out = executar_comando("git log --oneline --output=/tmp/x -1", base_dir=tmp_path)
+    assert res_log_out["codigo_saida"] == -1
+    assert "Argumento não permitido para 'git log --oneline'" in res_log_out["stderr"]
 
     # Argumentos permitidos
     res4 = executar_comando("git log --oneline -3", base_dir=tmp_path)
     assert res4["codigo_saida"] == 0
     assert "init" in res4["stdout"]
 
-    res5 = executar_comando("git diff --stat", base_dir=tmp_path)
+    res5 = executar_comando("git status", base_dir=tmp_path)
     assert res5["codigo_saida"] == 0
 
 
@@ -821,23 +827,22 @@ def test_git_orderfile_bloqueado(tmp_path):
     subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
     subprocess.run(["git", "commit", "-m", "commit 1"], cwd=str(tmp_path), capture_output=True)
 
-    # git diff -O / --orderfile
+    # git diff é bloqueado como subcomando não permitido
     res_diff_o = executar_comando("git diff -O order.txt", base_dir=tmp_path)
     assert res_diff_o["codigo_saida"] == -1
-    assert "Flag perigosa não permitida no git" in res_diff_o["stderr"]
+    assert "Subcomando git não permitido" in res_diff_o["stderr"]
 
     res_diff_orderfile = executar_comando("git diff --orderfile=order.txt", base_dir=tmp_path)
     assert res_diff_orderfile["codigo_saida"] == -1
-    assert "Flag perigosa não permitida no git" in res_diff_orderfile["stderr"]
+    assert "Subcomando git não permitido" in res_diff_orderfile["stderr"]
 
-    # git log -O / --orderfile
+    # git log sem --oneline ou com argumentos perigosos é bloqueado
     res_log_o = executar_comando("git log -O order.txt", base_dir=tmp_path)
     assert res_log_o["codigo_saida"] == -1
-    assert "Flag perigosa não permitida no git" in res_log_o["stderr"]
 
-    res_log_orderfile = executar_comando("git log --orderfile=order.txt", base_dir=tmp_path)
+    res_log_orderfile = executar_comando("git log --oneline --orderfile=order.txt", base_dir=tmp_path)
     assert res_log_orderfile["codigo_saida"] == -1
-    assert "Flag perigosa não permitida no git" in res_log_orderfile["stderr"]
+    assert "Argumento não permitido para 'git log --oneline'" in res_log_orderfile["stderr"]
 
 
 def test_comando_bloqueado_sem_falsos_positivos():
@@ -893,56 +898,62 @@ def test_git_exfiltracao_conteudo_bloqueado(tmp_path):
     chave_secreta = "SEGREDO_SUPER_CONFIDENCIAL_12345"
     (tmp_path / ".env").write_text(f"API_KEY={chave_secreta}\n", encoding="utf-8")
     subprocess.run(["git", "add", ".env"], cwd=str(tmp_path), capture_output=True)
-    subprocess.run(["git", "commit", "-m", "add secret"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add .env"], cwd=str(tmp_path), capture_output=True)
 
-    # 1. git log -p -1 deve ser bloqueado por flag de patch e nao vazar segredo
+    # 1. git log sem --oneline ou com -p deve ser bloqueado e nao vazar segredo
     res_log_p = executar_comando("git log -p -1", base_dir=tmp_path)
     assert res_log_p["codigo_saida"] == -1
     assert chave_secreta not in res_log_p["stdout"]
 
-    # 2. git show HEAD sem resumo ou arquivo especifico deve ser bloqueado e nao vazar segredo
+    # 2. git show é completamente bloqueado
     res_show_head = executar_comando("git show HEAD", base_dir=tmp_path)
     assert res_show_head["codigo_saida"] == -1
     assert chave_secreta not in res_show_head["stdout"]
 
-    # 3. git show --stat HEAD deve ser permitido e nao exibir conteudo do segredo
     res_show_stat = executar_comando("git show --stat HEAD", base_dir=tmp_path)
-    assert res_show_stat["codigo_saida"] == 0
+    assert res_show_stat["codigo_saida"] == -1
     assert chave_secreta not in res_show_stat["stdout"]
 
-    # 4. git log --oneline -3 deve ser permitido e nao vazar segredo
+    # 3. git diff é completamente bloqueado
+    res_diff = executar_comando("git diff", base_dir=tmp_path)
+    assert res_diff["codigo_saida"] == -1
+
+    # 4. git log --oneline -3 deve ser permitido e ter a linha com .env omitida
     res_log_oneline = executar_comando("git log --oneline -3", base_dir=tmp_path)
     assert res_log_oneline["codigo_saida"] == 0
     assert chave_secreta not in res_log_oneline["stdout"]
+    assert "init" in res_log_oneline["stdout"]
+    assert "add .env" not in res_log_oneline["stdout"]  # commit que cita .env ou arquivo protegido é omitido
 
-    # 5. git status deve ser permitido
+    # 5. git status deve ser permitido e omitir arquivos protegidos
+    (tmp_path / ".env").write_text("NOVO_SEGREDO=67890\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text("print('novo')", encoding="utf-8")
     res_status = executar_comando("git status", base_dir=tmp_path)
     assert res_status["codigo_saida"] == 0
+    assert ".env" not in res_status["stdout"]
+    assert "app.py" in res_status["stdout"]
 
 
-def test_filtrar_saida_git_redige_diff_protegido():
+def test_filtrar_saida_git_omite_linhas_protegidas():
     from harness.tools import _filtrar_saida_git
 
-    diff_vazamento = (
-        "diff --git a/README.md b/README.md\n"
-        "index 111..222 100644\n"
-        "--- a/README.md\n"
-        "+++ b/README.md\n"
-        "@@ -1 +1 @@\n"
-        "+novo readme\n"
-        "diff --git a/.env b/.env\n"
-        "new file mode 100644\n"
-        "index 000..333\n"
-        "--- /dev/null\n"
-        "+++ b/.env\n"
-        "@@ -0,0 +1 @@\n"
-        "+SECRET_KEY=super_secreta_999\n"
+    saida_status = (
+        "On branch main\n"
+        "Changes to be committed:\n"
+        "\tmodified:   app.py\n"
+        "\tmodified:   .env\n"
+        "\tmodified:   src/.envrc\n"
+        "Untracked files:\n"
+        "\tREADME.md\n"
+        "\t.env.example\n"
     )
 
-    saida_filtrada = _filtrar_saida_git(diff_vazamento)
-    assert "+novo readme" in saida_filtrada
-    assert "SECRET_KEY=super_secreta_999" not in saida_filtrada
-    assert "[conteúdo de arquivo protegido omitido pela política de segurança]" in saida_filtrada
+    saida_filtrada = _filtrar_saida_git(saida_status)
+    assert "app.py" in saida_filtrada
+    assert "README.md" in saida_filtrada
+    assert ".env.example" in saida_filtrada
+    assert ".env\n" not in saida_filtrada
+    assert ".envrc" not in saida_filtrada
 
 
 def test_anti_duplicacao_relative_to():
@@ -1052,96 +1063,43 @@ def test_findstr_posix_fallback_limites(tmp_path, monkeypatch):
     assert len(linhas) == 50
 
 
-def test_filtro_fail_safe_git_diff_variacoes():
+def test_filtro_git_status_ls_files_e_log_renomeacoes():
     from harness.tools import _filtrar_saida_git
 
-    # 1. Diff com pasta com espaço e arquivo protegido entre aspas
-    diff_espaco = (
-        'diff --git "a/pasta dir/.env" "b/pasta dir/.env"\n'
-        'index 111..222 100644\n'
-        '--- "a/pasta dir/.env"\n'
-        '+++ "b/pasta dir/.env"\n'
-        '@@ -1 +1 @@\n'
-        '+SEGREDO_ESPACO=123\n'
+    saida_bruta = (
+        "On branch main\n"
+        "Changes to be committed:\n"
+        "  modified:   app.py\n"
+        "  modified:   .env\n"
+        "  renamed:    src/old.py -> {dst => .env}/util.py\n"
+        "  renamed:    {a => .env}/x.py\n"
+        "  renamed:    old.py -> nova_pasta/.envrc\n"
+        "Untracked files:\n"
+        "  .env.local\n"
+        "  novo.py\n"
     )
-    saida_espaco = _filtrar_saida_git(diff_espaco)
-    assert "SEGREDO_ESPACO=123" not in saida_espaco
-    assert "[conteúdo de arquivo protegido omitido pela política de segurança]" in saida_espaco
-
-    # 2. Diff sem prefixo (--no-prefix) com arquivo protegido
-    diff_no_prefix = (
-        'diff --git .env .env\n'
-        'index 111..222 100644\n'
-        '--- .env\n'
-        '+++ .env\n'
-        '@@ -1 +1 @@\n'
-        '+SEGREDO_NO_PREFIX=456\n'
-    )
-    saida_no_prefix = _filtrar_saida_git(diff_no_prefix)
-    assert "SEGREDO_NO_PREFIX=456" not in saida_no_prefix
-    assert "[conteúdo de arquivo protegido omitido pela política de segurança]" in saida_no_prefix
-
-    # 3. Cabeçalho de diff malformado ou desconhecido -> fail-safe redige
-    diff_malformado = (
-        'diff --git estranho_sem_segundo_argumento\n'
-        '@@ -1 +1 @@\n'
-        '+DADOS_QUE_PODEM_SER_SENSIVEIS\n'
-    )
-    saida_malformado = _filtrar_saida_git(diff_malformado)
-    assert "DADOS_QUE_PODEM_SER_SENSIVEIS" not in saida_malformado
-    assert "fail-safe" in saida_malformado
-
-    # 4. Arquivo seguro com espaço passa intacto
-    diff_seguro = (
-        'diff --git "a/minha pasta/app.py" "b/minha pasta/app.py"\n'
-        'index 111..222 100644\n'
-        '--- "a/minha pasta/app.py"\n'
-        '+++ "b/minha pasta/app.py"\n'
-        '@@ -1 +1 @@\n'
-        '+print("ola mundo")\n'
-    )
-    saida_seguro = _filtrar_saida_git(diff_seguro)
-    assert '+print("ola mundo")' in saida_seguro
+    saida_filtrada = _filtrar_saida_git(saida_bruta)
+    assert "app.py" in saida_filtrada
+    assert "novo.py" in saida_filtrada
+    assert ".env" not in saida_filtrada
+    assert ".envrc" not in saida_filtrada
+    assert ".env.local" not in saida_filtrada
+    assert "old.py" not in saida_filtrada
 
 
-def test_git_diff_sem_resumo_e_flags_prefixo_bloqueadas(tmp_path):
-    import subprocess
-    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True)
+def test_git_diff_bloqueado_completamente(tmp_path):
+    # O subcomando git diff agora é completamente bloqueado pela política de segurança
+    res1 = executar_comando("git diff", base_dir=tmp_path)
+    assert res1["codigo_saida"] == -1
+    assert "Subcomando git não permitido: 'diff'" in res1["stderr"]
 
-    (tmp_path / "app.py").write_text("print('v1')", encoding="utf-8")
-    subprocess.run(["git", "add", "app.py"], cwd=str(tmp_path), capture_output=True)
-    subprocess.run(["git", "commit", "-m", "v1"], cwd=str(tmp_path), capture_output=True)
+    res2 = executar_comando("git diff --stat", base_dir=tmp_path)
+    assert res2["codigo_saida"] == -1
+    assert "Subcomando git não permitido: 'diff'" in res2["stderr"]
 
-    (tmp_path / "app.py").write_text("print('v2')", encoding="utf-8")
-
-    # git diff sem flag de resumo deve ser bloqueado
-    res_diff_puro = executar_comando("git diff", base_dir=tmp_path)
-    assert res_diff_puro["codigo_saida"] == -1
-    assert "sem flag de resumo bloqueado" in res_diff_puro["stderr"]
-
-    # git diff com resumo permitido
-    res_diff_stat = executar_comando("git diff --stat", base_dir=tmp_path)
-    assert res_diff_stat["codigo_saida"] == 0
-
-    # Flags de prefixo bloqueadas
-    res_no_prefix = executar_comando("git diff --stat --no-prefix", base_dir=tmp_path)
-    assert res_no_prefix["codigo_saida"] == -1
-    assert "Flag perigosa não permitida no git: '--no-prefix'" in res_no_prefix["stderr"]
-
-    res_src_prefix = executar_comando("git diff --stat --src-prefix=x/", base_dir=tmp_path)
-    assert res_src_prefix["codigo_saida"] == -1
-    assert "Flag perigosa não permitida no git: '--src-prefix=x/'" in res_src_prefix["stderr"]
-
-    res_dst_prefix = executar_comando("git diff --stat --dst-prefix=y/", base_dir=tmp_path)
-    assert res_dst_prefix["codigo_saida"] == -1
-    assert "Flag perigosa não permitida no git: '--dst-prefix=y/'" in res_dst_prefix["stderr"]
-
-    # Flags -c e --cc bloqueadas
-    res_cc = executar_comando("git diff --stat --cc", base_dir=tmp_path)
-    assert res_cc["codigo_saida"] == -1
-    assert "Flag de exibição de conteúdo/patch não permitida no git" in res_cc["stderr"]
+    res3 = executar_comando("git diff --no-prefix", base_dir=tmp_path)
+    assert res3["codigo_saida"] == -1
+    assert "Subcomando git não permitido: 'diff'" in res3["stderr"]
 
 
 def test_findstr_validacao_estrita_argumentos_e_curingas(tmp_path):
@@ -1279,26 +1237,6 @@ def test_envrc_protegido_e_templates(tmp_path):
     assert "SECRET=example" in res_example["stdout"]
 
 
-def test_git_show_hifen_isolado_bloqueado(tmp_path):
-    import subprocess
-    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True)
-
-    (tmp_path / "app.py").write_text("print('hello')", encoding="utf-8")
-    subprocess.run(["git", "add", "app.py"], cwd=str(tmp_path), capture_output=True)
-    subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), capture_output=True)
-
-    # git show HEAD -- isolado NÃO deve ser tratado como arquivo específico
-    res_show_dash = executar_comando("git show HEAD --", base_dir=tmp_path)
-    assert res_show_dash["codigo_saida"] == -1
-    assert "requer flags de resumo" in res_show_dash["stderr"]
-
-    # git show HEAD --stat -- permitido
-    res_show_dash_stat = executar_comando("git show HEAD --stat --", base_dir=tmp_path)
-    assert res_show_dash_stat["codigo_saida"] == 0
-
-
 def test_type_multi_arquivo_formato_cmd(tmp_path):
     (tmp_path / "f1.txt").write_text("conteudo 1", encoding="utf-8")
     (tmp_path / "f2.txt").write_text("conteudo 2", encoding="utf-8")
@@ -1315,223 +1253,37 @@ def test_type_multi_arquivo_formato_cmd(tmp_path):
     assert res_multi["stdout"] == esperado
 
 
-def test_git_bloqueio_objetos_nus_blob_e_tree(tmp_path):
+def test_git_show_e_diff_bloqueados_em_todas_as_variacoes(tmp_path):
     import subprocess
     subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True)
 
     (tmp_path / "app.py").write_text("print('safe')", encoding="utf-8")
-    (tmp_path / ".env").write_text("CHAVE=SUPERSEGREDO_CRITICO\n", encoding="utf-8")
-    subprocess.run(["git", "add", "app.py", ".env"], cwd=str(tmp_path), capture_output=True)
-    subprocess.run(["git", "commit", "-m", "commit inicial"], cwd=str(tmp_path), capture_output=True)
-
-    # Obtém SHA do blob do .env (completo e abreviado)
-    res_blob = subprocess.run(["git", "rev-parse", "HEAD:.env"], cwd=str(tmp_path), capture_output=True, text=True)
-    blob_sha = res_blob.stdout.strip()
-    assert len(blob_sha) == 40
-    blob_abbrev = blob_sha[:7]
-
-    # Obtém SHA da tree
-    res_tree = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=str(tmp_path), capture_output=True, text=True)
-    tree_sha = res_tree.stdout.strip()
-
-    # Obtém SHA do commit
-    res_commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(tmp_path), capture_output=True, text=True)
-    commit_sha = res_commit.stdout.strip()
-
-    # Bloqueio de objeto blob nu com e sem flags de resumo, completo e abreviado
-    res1 = executar_comando(f"git show {blob_sha}", base_dir=tmp_path)
-    assert res1["codigo_saida"] == -1
-    assert "Objeto git nu (blob/tree) não permitido" in res1["stderr"]
-    assert "SUPERSEGREDO_CRITICO" not in res1["stdout"]
-
-    res2 = executar_comando(f"git show --stat {blob_sha}", base_dir=tmp_path)
-    assert res2["codigo_saida"] == -1
-    assert "Objeto git nu (blob/tree) não permitido" in res2["stderr"]
-    assert "SUPERSEGREDO_CRITICO" not in res2["stdout"]
-
-    res3 = executar_comando(f"git show --stat {blob_abbrev}", base_dir=tmp_path)
-    assert res3["codigo_saida"] == -1
-    assert "Objeto git nu (blob/tree) não permitido" in res3["stderr"]
-    assert "SUPERSEGREDO_CRITICO" not in res3["stdout"]
-
-    res4 = executar_comando(f"git show --name-only {blob_abbrev}", base_dir=tmp_path)
-    assert res4["codigo_saida"] == -1
-    assert "Objeto git nu (blob/tree) não permitido" in res4["stderr"]
-
-    res5 = executar_comando(f"git show --name-status {blob_abbrev}", base_dir=tmp_path)
-    assert res5["codigo_saida"] == -1
-    assert "Objeto git nu (blob/tree) não permitido" in res5["stderr"]
-
-    res6 = executar_comando(f"git show -s {blob_abbrev}", base_dir=tmp_path)
-    assert res6["codigo_saida"] == -1
-    assert "Objeto git nu (blob/tree) não permitido" in res6["stderr"]
-
-    res7 = executar_comando(f"git show --no-patch {blob_abbrev}", base_dir=tmp_path)
-    assert res7["codigo_saida"] == -1
-    assert "Objeto git nu (blob/tree) não permitido" in res7["stderr"]
-
-    # Bloqueio de objeto tree direto e HEAD^{tree}
-    res_t1 = executar_comando(f"git show {tree_sha}", base_dir=tmp_path)
-    assert res_t1["codigo_saida"] == -1
-    assert "Objeto git nu (blob/tree) não permitido" in res_t1["stderr"]
-
-    res_t2 = executar_comando(f"git show --stat {tree_sha}", base_dir=tmp_path)
-    assert res_t2["codigo_saida"] == -1
-    assert "Objeto git nu (blob/tree) não permitido" in res_t2["stderr"]
-
-    res_t3 = executar_comando('git show "HEAD^{tree}"', base_dir=tmp_path)
-    assert res_t3["codigo_saida"] == -1
-    assert "Objeto git nu (blob/tree) não permitido" in res_t3["stderr"]
-
-    res_t4 = executar_comando('git show --stat "HEAD^{tree}"', base_dir=tmp_path)
-    assert res_t4["codigo_saida"] == -1
-    assert "Objeto git nu (blob/tree) não permitido" in res_t4["stderr"]
-
-    # Criação de tags leves e anotadas apontando para blob, tree e commit
-    subprocess.run(["git", "tag", "tagleve_blob", blob_sha], cwd=str(tmp_path), capture_output=True)
-    subprocess.run(["git", "tag", "-a", "taganotada_blob", "-m", "tag blob", blob_sha], cwd=str(tmp_path), capture_output=True)
-    subprocess.run(["git", "tag", "-a", "taganotada_tree", "-m", "tag tree", tree_sha], cwd=str(tmp_path), capture_output=True)
-    subprocess.run(["git", "tag", "-a", "taganotada_commit", "-m", "tag commit", commit_sha], cwd=str(tmp_path), capture_output=True)
-
-    # 1. Tag LEVE apontando para blob deve ser recusada e não vazar segredo
-    res_tl1 = executar_comando("git show tagleve_blob", base_dir=tmp_path)
-    assert res_tl1["codigo_saida"] == -1
-    assert "Objeto git nu (blob/tree) não permitido" in res_tl1["stderr"]
-    assert "SUPERSEGREDO_CRITICO" not in res_tl1["stdout"]
-    assert "SUPERSEGREDO_CRITICO" not in res_tl1["stderr"]
-
-    res_tl2 = executar_comando("git show --stat tagleve_blob", base_dir=tmp_path)
-    assert res_tl2["codigo_saida"] == -1
-    assert "Objeto git nu (blob/tree) não permitido" in res_tl2["stderr"]
-    assert "SUPERSEGREDO_CRITICO" not in res_tl2["stdout"]
-    assert "SUPERSEGREDO_CRITICO" not in res_tl2["stderr"]
-
-    # 2. Tag ANOTADA apontando para blob deve ser recusada e não vazar segredo
-    res_ta1 = executar_comando("git show taganotada_blob", base_dir=tmp_path)
-    assert res_ta1["codigo_saida"] == -1
-    assert "Objeto git nu (blob/tree) não permitido" in res_ta1["stderr"]
-    assert "SUPERSEGREDO_CRITICO" not in res_ta1["stdout"]
-    assert "SUPERSEGREDO_CRITICO" not in res_ta1["stderr"]
-
-    res_ta2 = executar_comando("git show --stat taganotada_blob", base_dir=tmp_path)
-    assert res_ta2["codigo_saida"] == -1
-    assert "Objeto git nu (blob/tree) não permitido" in res_ta2["stderr"]
-    assert "SUPERSEGREDO_CRITICO" not in res_ta2["stdout"]
-    assert "SUPERSEGREDO_CRITICO" not in res_ta2["stderr"]
-
-    # 3. Tag ANOTADA apontando para tree deve ser recusada
-    res_tt1 = executar_comando("git show taganotada_tree", base_dir=tmp_path)
-    assert res_tt1["codigo_saida"] == -1
-    assert "Objeto git nu (blob/tree) não permitido" in res_tt1["stderr"]
-
-    res_tt2 = executar_comando("git show --stat taganotada_tree", base_dir=tmp_path)
-    assert res_tt2["codigo_saida"] == -1
-    assert "Objeto git nu (blob/tree) não permitido" in res_tt2["stderr"]
-
-    # 4. Tag ANOTADA apontando para commit DEVE continuar permitida
-    res_tc1 = executar_comando("git show --stat taganotada_commit", base_dir=tmp_path)
-    assert res_tc1["codigo_saida"] == 0
-    assert res_tc1["stdout"] != ""
-    assert "SUPERSEGREDO_CRITICO" not in res_tc1["stdout"]
-
-    res_tc2 = executar_comando("git log taganotada_commit", base_dir=tmp_path)
-    assert res_tc2["codigo_saida"] == 0
-
-    # Bloqueio em git log
-    res_l1 = executar_comando(f"git log {blob_sha}", base_dir=tmp_path)
-    assert res_l1["codigo_saida"] == -1
-    assert "Objeto git nu (blob/tree) não permitido" in res_l1["stderr"]
-
-    # Objeto commit com resumo é permitido
-    res_c1 = executar_comando(f"git show --stat {commit_sha}", base_dir=tmp_path)
-    assert res_c1["codigo_saida"] == 0
-    res_c2 = executar_comando("git show --stat HEAD", base_dir=tmp_path)
-    assert res_c2["codigo_saida"] == 0
-
-
-def test_git_flags_patch_compostas_e_raw_bloqueadas(tmp_path):
-    # Flags compostas e --raw devem ser bloqueadas no git diff e git log
-    res1 = executar_comando("git log --patch-with-raw -1", base_dir=tmp_path)
-    assert res1["codigo_saida"] == -1
-    assert "Flag de exibição de conteúdo/patch não permitida" in res1["stderr"]
-
-    res2 = executar_comando("git log --stat --patch-with-raw -1", base_dir=tmp_path)
-    assert res2["codigo_saida"] == -1
-    assert "Flag de exibição de conteúdo/patch não permitida" in res2["stderr"]
-
-    res3 = executar_comando("git diff --stat --patch-with-stat", base_dir=tmp_path)
-    assert res3["codigo_saida"] == -1
-    assert "Flag de exibição de conteúdo/patch não permitida" in res3["stderr"]
-
-    res4 = executar_comando("git diff --stat --raw", base_dir=tmp_path)
-    assert res4["codigo_saida"] == -1
-    assert "Flag de exibição de conteúdo/patch não permitida" in res4["stderr"]
-
-    res5 = executar_comando("git log -n 1 --raw", base_dir=tmp_path)
-    assert res5["codigo_saida"] == -1
-    assert "Flag de exibição de conteúdo/patch não permitida" in res5["stderr"]
-
-
-def test_git_redacao_metadados_resumo_e_diff_cc(tmp_path):
-    import subprocess
-    from harness.tools import _filtrar_saida_git
-
-    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True)
-
-    (tmp_path / "app.py").write_text("print('safe')", encoding="utf-8")
-    (tmp_path / ".env").write_text("SECRET=XYZ\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("CHAVE=SUPERSEGREDO\n", encoding="utf-8")
     subprocess.run(["git", "add", "app.py", ".env"], cwd=str(tmp_path), capture_output=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), capture_output=True)
 
-    # 1. git show --stat HEAD redige .env mas preserva app.py
-    res_stat = executar_comando("git show --stat HEAD", base_dir=tmp_path)
-    assert res_stat["codigo_saida"] == 0
-    assert "SECRET" not in res_stat["stdout"]
-    assert "app.py" in res_stat["stdout"]
-    assert ".env" not in res_stat["stdout"]
-    assert "[arquivo protegido omitido pela política de segurança]" in res_stat["stdout"]
+    # git diff bloqueado em qualquer forma
+    for cmd in ["git diff", "git diff --stat", "git diff --name-only", "git diff HEAD", "git diff --no-prefix"]:
+        res = executar_comando(cmd, base_dir=tmp_path)
+        assert res["codigo_saida"] == -1
+        assert "Subcomando git não permitido" in res["stderr"]
+        assert "diff" in res["stderr"]
 
-    # 2. git show --name-only HEAD redige .env
-    res_name = executar_comando("git show --name-only HEAD", base_dir=tmp_path)
-    assert res_name["codigo_saida"] == 0
-    assert "app.py" in res_name["stdout"]
-    assert ".env" not in res_name["stdout"]
-    assert "[arquivo protegido omitido pela política de segurança]" in res_name["stdout"]
+    # git show bloqueado em qualquer forma
+    for cmd in ["git show", "git show HEAD", "git show --stat", "git show --name-only", "git show --no-patch HEAD"]:
+        res = executar_comando(cmd, base_dir=tmp_path)
+        assert res["codigo_saida"] == -1
+        assert "Subcomando git não permitido" in res["stderr"]
+        assert "show" in res["stderr"]
+        assert "SUPERSEGREDO" not in res["stdout"]
 
-    # 3. git show --name-status HEAD redige .env
-    res_status = executar_comando("git show --name-status HEAD", base_dir=tmp_path)
-    assert res_status["codigo_saida"] == 0
-    assert "app.py" in res_status["stdout"]
-    assert ".env" not in res_status["stdout"]
-    assert "[arquivo protegido omitido pela política de segurança]" in res_status["stdout"]
-
-    # 4. diff --cc protegido e seguro no _filtrar_saida_git
-    diff_cc_protegido = (
-        "diff --cc .env\n"
-        "index 111,222..333\n"
-        "--- a/.env\n"
-        "+++ b/.env\n"
-        "@@@ -1,1 -1,1 +1,1 @@@\n"
-        "+SECRET_CONFLITO\n"
-    )
-    saida_cc_p = _filtrar_saida_git(diff_cc_protegido)
-    assert "SECRET_CONFLITO" not in saida_cc_p
-    assert "[conteúdo de arquivo protegido omitido pela política de segurança]" in saida_cc_p
-
-    diff_cc_seguro = (
-        "diff --cc app.py\n"
-        "index 111,222..333\n"
-        "--- a/app.py\n"
-        "+++ b/app.py\n"
-        "@@@ -1,1 -1,1 +1,1 @@@\n"
-        "+print('resolvido')\n"
-    )
-    saida_cc_s = _filtrar_saida_git(diff_cc_seguro)
-    assert "+print('resolvido')" in saida_cc_s
+    # git log sem --oneline ou com flags de conteúdo bloqueado
+    for cmd in ["git log", "git log -p", "git log --stat", "git log --patch-with-raw -1", "git log --raw"]:
+        res = executar_comando(cmd, base_dir=tmp_path)
+        assert res["codigo_saida"] == -1
+        assert "requer a flag '--oneline'" in res["stderr"] or "não permitida" in res["stderr"]
 
 
 def test_findstr_flags_compostas_e_flag_c(tmp_path):
@@ -1598,10 +1350,8 @@ def test_format_com_bloqueado():
     assert comando_bloqueado("echo oi & format.com C:") is not None
 
 
-def test_obter_env_saneado_com_ponto_e_diff_janela_chunk(monkeypatch):
-    from harness.tools import _filtrar_saida_git
-
-    # 1. Variáveis com '.' delimitador
+def test_obter_env_saneado_com_ponto(monkeypatch):
+    # Variáveis com '.' delimitador
     monkeypatch.setenv("MY.PASSWORD", "segredo_com_ponto")
     monkeypatch.setenv("APP.SECRET.KEY", "chave_com_ponto")
     monkeypatch.setenv("DB.AUTH", "auth_com_ponto")
@@ -1613,48 +1363,53 @@ def test_obter_env_saneado_com_ponto_e_diff_janela_chunk(monkeypatch):
     assert "DB.AUTH" not in env_saneado
     assert env_saneado.get("APP.SAFE.CONFIG") == "valor_seguro"
 
-    # 2. Janela de cabeçalho do diff com muitas linhas antes do chunk @@
-    diff_longo_cabecalho = (
-        "diff --git a/pasta/antiga/app.py b/pasta/nova/app.py\n"
-        "similarity index 98%\n"
-        "rename from pasta/antiga/app.py\n"
-        "rename to pasta/nova/app.py\n"
-        "dissimilarity index 2%\n"
-        "index abcdef1..1234567 100644\n"
-        "--- a/pasta/antiga/.env\n"
-        "+++ b/pasta/nova/.env\n"
-        "@@ -1,3 +1,3 @@\n"
-        "+CONTEUDO_VAZADO=TRUE\n"
-    )
-    saida_filtrada = _filtrar_saida_git(diff_longo_cabecalho)
-    assert "CONTEUDO_VAZADO=TRUE" not in saida_filtrada
-    assert "[conteúdo de arquivo protegido omitido pela política de segurança]" in saida_filtrada
+
+def test_executar_comando_teto_saida_subprocesso(tmp_path):
+    # Gera mais de 1 MB de saída via script python
+    script = tmp_path / "gerar_saida.py"
+    script.write_text("import sys\nsys.stdout.write('A' * (1024 * 1024 + 50000))\n", encoding="utf-8")
+
+    res = executar_comando("python gerar_saida.py", base_dir=tmp_path)
+    assert res["codigo_saida"] == 0
+    # A saída deve estar limitada próxima a 1 MB e conter o aviso de truncamento de segurança
+    assert "saída de stdout truncada no limite de segurança de 1024 KB" in res["stdout"]
+    # Garante que não carregou os 50 KB excedentes em memória
+    assert len(res["stdout"]) <= 1024 * 1024 + 200
 
 
-def test_git_checagem_objeto_fail_closed_em_excecao(tmp_path, monkeypatch):
-    import subprocess
-    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True)
+def test_buscar_no_projeto_redos_quantificador_opcional():
+    from harness.tools import _padrao_tem_risco_redos
 
-    (tmp_path / "app.py").write_text("print('hello')", encoding="utf-8")
-    subprocess.run(["git", "add", "app.py"], cwd=str(tmp_path), capture_output=True)
-    subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), capture_output=True)
+    # Quantificadores opcionais aninhados ou combinados
+    assert _padrao_tem_risco_redos(r"(a?)*") is True
+    assert _padrao_tem_risco_redos(r"(a?)+") is True
+    assert _padrao_tem_risco_redos(r"(a|b?)+") is True
+    assert _padrao_tem_risco_redos(r"((ab)?)*") is True
 
-    real_run = subprocess.run
+    # Padrão seguro
+    assert _padrao_tem_risco_redos(r"def [a-zA-Z0-9_]+\(") is False
 
-    def mock_subprocess_run(cmd, *args, **kwargs):
-        # Se for a checagem git cat-file, simula erro/timeout
-        if isinstance(cmd, list) and len(cmd) >= 2 and cmd[0] == "git" and cmd[1] == "cat-file":
-            raise subprocess.TimeoutExpired(cmd=cmd, timeout=5)
-        return real_run(cmd, *args, **kwargs)
+    # buscar_no_projeto recusa padrão com quantificador opcional aninhado
+    res = buscar_no_projeto(r"(a?)*")
+    assert res["sucesso"] is False
+    assert "catastrófico" in res["erro"]
 
-    monkeypatch.setattr(subprocess, "run", mock_subprocess_run)
 
-    # O comando deve ser RECUSADO fail-closed, e NÃO cair para o ramo de caminho
-    res = executar_comando("git show --stat HEAD", base_dir=tmp_path)
-    assert res["codigo_saida"] == -1
-    assert "Falha na verificação de segurança do objeto git" in res["stderr"]
+def test_buscar_no_projeto_timeout(tmp_path, monkeypatch):
+    import time
+    # Cria alguns arquivos de teste
+    (tmp_path / "f1.txt").write_text("linha 1\nlinha 2\n", encoding="utf-8")
+    (tmp_path / "f2.txt").write_text("linha 3\nlinha 4\n", encoding="utf-8")
+
+    # Simula passagem de tempo maior que TEMPO_MAXIMO_BUSCA_SEGUNDOS
+    tempos = [0.0, 5.0, 11.0, 15.0]
+    monkeypatch.setattr(time, "time", lambda: tempos.pop(0) if tempos else 20.0)
+
+    res = buscar_no_projeto("linha", base_dir=tmp_path)
+    assert res["sucesso"] is True
+    assert res["limite_atingido"] is True
+    assert "tempo limite" in res.get("aviso", "")
+
 
 
 
