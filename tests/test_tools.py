@@ -14,6 +14,7 @@ from harness.tools import (
     TOOLS,
     TOOL_REGISTRY,
     _destino_redirecionamento,
+    _destinos_redirecionamento,
     caminho_protegido,
     comando_toca_protegido,
 )
@@ -331,5 +332,51 @@ def test_comando_toca_protegido_leitura_e_escrita():
     ]
     for cmd in comandos_permitidos:
         assert comando_bloqueado(cmd) is None, f"Deveria ter permitido: {cmd}"
+
+
+def test_redirecionamento_encadeado_e_multiplos_destinos():
+    # Extração de múltiplos destinos
+    cmd_multi = 'echo a > "caminho 1.txt" && echo b > \'caminho 2.txt\' ; type foo > c.txt'
+    assert _destinos_redirecionamento(cmd_multi) == ["caminho 1.txt", "caminho 2.txt", "c.txt"]
+
+    # Redirecionamento encadeado atingindo arquivo protegido deve ser bloqueado
+    cmd_perigoso = "dir > safe.txt & echo x > .env"
+    assert _destinos_redirecionamento(cmd_perigoso) == ["safe.txt", ".env"]
+    assert comando_bloqueado(cmd_perigoso) is not None
+
+    cmd_perigoso2 = "type foo.txt > out1.txt && echo bar >> .git/config"
+    assert comando_bloqueado(cmd_perigoso2) is not None
+
+    # Redirecionamento encadeado com destinos seguros deve ser permitido
+    cmd_seguro = "echo a > safe1.txt && echo b > safe2.txt ; echo c > safe3.txt"
+    assert comando_bloqueado(cmd_seguro) is None
+
+
+def test_comando_bloqueado_powershell_destrutivo():
+    comandos_ps_proibidos = [
+        "Remove-Item -Recurse pasta",
+        "Remove-Item pasta -Force",
+        "Remove-Item -r -fo pasta",
+        "Remove-Item -recurse -force C:\\dados",
+        "ri -r -fo pasta",
+        "ri -recurse C:\\temp",
+        "del -Recurse pasta",
+        "rd -Recurse pasta",
+        "Format-Volume -DriveLetter D",
+        "Stop-Computer",
+        "Clear-Disk 1",
+    ]
+    for cmd in comandos_ps_proibidos:
+        assert comando_bloqueado(cmd) is not None, f"Deveria ter bloqueado comando PowerShell destrutivo: {cmd}"
+
+    comandos_ps_permitidos = [
+        "Get-ChildItem",
+        "Get-ChildItem -Path .",
+        "Get-ChildItem -Filter *.py",
+        "Remove-Item arquivo_unico.txt",
+    ]
+    for cmd in comandos_ps_permitidos:
+        assert comando_bloqueado(cmd) is None, f"Deveria ter permitido comando seguro: {cmd}"
+
 
 

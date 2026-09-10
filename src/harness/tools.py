@@ -26,6 +26,13 @@ PADROES_BLOQUEADOS = [
     r"\bgit\s+clean\b[^&|;]*(?:-[a-zA-Z0-9]*f|--force)",
     # type nul > (truncamento de arquivo)
     r"\btype\s+nul\s*>",
+    # PowerShell destrutivo: Remove-Item com -Recurse / -Force, ri -r -fo, del -Recurse, etc.
+    r"\bremove-item\b[^&|;]*(?:-(?:r|recurse|force|fo))\b",
+    r"\bri\s+[^&|;]*(?:-(?:r|recurse|force|fo))\b",
+    r"\b(del|erase|rd|rmdir)\s+[^&|;]*-recurse\b",
+    r"\bformat-volume\b",
+    r"\bstop-computer\b",
+    r"\bclear-disk\b",
 ]
 
 LIMITE_LEITURA_ARQUIVO_BYTES = 200 * 1024  # 200 KB
@@ -90,16 +97,28 @@ def caminho_protegido(caminho: Union[str, Path], modo: str = "leitura") -> bool:
     return False
 
 
-def _destino_redirecionamento(comando: str) -> Optional[str]:
+def _destinos_redirecionamento(comando: str) -> List[str]:
     """
-    Função pura que extrai o destino de um redirecionamento '>' ou '>>' no comando, se houver.
+    Função pura que extrai todos os destinos de redirecionamento '>' ou '>>' no comando,
+    inclusive em comandos encadeados (&, &&, |, ;).
     Trata aspas simples e duplas no caminho e ignora redirecionamentos de descritor como '2>&1'.
     """
-    match = re.search(r"(?:^|[^>])(?:>>|>)\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s>&|]+))", comando)
-    if match:
+    destinos: List[str] = []
+    padrao = r"(?:^|[^>0-9])(?:>>|>)\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s>&|;]+))"
+    for match in re.finditer(padrao, comando):
         destino = match.group(1) or match.group(2) or match.group(3)
-        return destino.strip() if destino else None
-    return None
+        if destino:
+            destinos.append(destino.strip())
+    return destinos
+
+
+def _destino_redirecionamento(comando: str) -> Optional[str]:
+    """
+    Função pura que extrai o primeiro destino de um redirecionamento '>' ou '>>' no comando.
+    Mantida para retrocompatibilidade.
+    """
+    destinos = _destinos_redirecionamento(comando)
+    return destinos[0] if destinos else None
 
 
 def _destino_redirecionamento_e_protegido(destino: str) -> bool:
@@ -187,9 +206,10 @@ def comando_bloqueado(comando: str) -> Optional[str]:
         if re.search(padrao, cmd_lower):
             return padrao
 
-    destino = _destino_redirecionamento(comando)
-    if destino and _destino_redirecionamento_e_protegido(destino):
-        return r"redirecionamento_destino_protegido"
+    destinos = _destinos_redirecionamento(comando)
+    for dest in destinos:
+        if _destino_redirecionamento_e_protegido(dest):
+            return r"redirecionamento_destino_protegido"
 
     toca_prot = comando_toca_protegido(comando)
     if toca_prot:
