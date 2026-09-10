@@ -36,6 +36,59 @@ LIMITE_TRUNCAMENTO_SAIDA = 4000
 
 DIRS_IGNORADOS_BUSCA = DIRS_IGNORADOS
 
+LEITURA_COMANDOS = {"type", "cat", "more", "findstr", "head", "tail", "get-content", "gc"}
+ESCRITA_COMANDOS = {"copy", "move", "xcopy", "robocopy", "mklink", "attrib", "icacls"}
+
+
+def caminho_protegido(caminho: Union[str, Path], modo: str = "leitura") -> bool:
+    """
+    Função pura que avalia se um caminho (relativo ou absoluto) atinge
+    um recurso protegido segundo CAMINHOS_PROTEGIDOS.
+    Modos suportados: 'leitura' ou 'escrita'.
+    """
+    c_str = str(caminho).replace("\\", "/").strip()
+    if not c_str:
+        return False
+
+    # Trata sintaxe git de refs (ex.: HEAD:.env ou refs/heads/main:.env)
+    if ":" in c_str and not (len(c_str) >= 2 and c_str[1] == ":" and c_str[0].isalpha()):
+        partes_git = c_str.split(":", 1)
+        if len(partes_git) == 2 and partes_git[1]:
+            c_str = partes_git[1].strip()
+
+    # Remove prefixo './' se houver
+    if c_str.startswith("./"):
+        c_str = c_str[2:]
+
+    partes = [p.lower() for p in c_str.split("/") if p and p != "."]
+    if not partes:
+        return False
+
+    bloqueio_total = [p.lower() for p in CAMINHOS_PROTEGIDOS.get("bloqueio_total", [])]
+    somente_escrita = [p.lower() for p in CAMINHOS_PROTEGIDOS.get("somente_escrita", [])]
+
+    # Checa bloqueio total (leitura e escrita)
+    for bp in bloqueio_total:
+        for p in partes:
+            if bp == ".env":
+                if p == ".env" or p.startswith(".env.") or p.startswith(".env_"):
+                    return True
+            elif bp == ".git":
+                if p == ".git":
+                    return True
+            else:
+                if p == bp:
+                    return True
+
+    # Checa somente escrita
+    if modo == "escrita":
+        for sp in somente_escrita:
+            for p in partes:
+                if p == sp:
+                    return True
+
+    return False
+
 
 def _destino_redirecionamento(comando: str) -> Optional[str]:
     """
@@ -50,18 +103,83 @@ def _destino_redirecionamento(comando: str) -> Optional[str]:
 
 
 def _destino_redirecionamento_e_protegido(destino: str) -> bool:
-    """Verifica se o destino de redirecionamento atinge arquivo/pasta protegida (.env ou .git)."""
-    dest_norm = destino.replace("\\", "/").lower().strip()
-    partes = [p for p in dest_norm.split("/") if p and p != "."]
-    for parte in partes:
-        if parte == ".env" or parte == ".git" or parte.startswith(".env") or parte.startswith(".git"):
-            return True
-    return False
+    """Verifica se o destino de redirecionamento atinge arquivo/pasta protegida via caminho_protegido."""
+    return caminho_protegido(destino, modo="escrita")
+
+
+def comando_toca_protegido(comando: str) -> Optional[str]:
+    """
+    Função pura que analisa se o comando tenta ler ou escrever em caminhos protegidos.
+    Cobre:
+    - LEITURA: type, cat, more, findstr, head, tail, Get-Content, gc, git show HEAD:.env, git diff .env
+    - ESCRITA: copy, move, xcopy, robocopy, mklink, attrib, icacls
+    - Redirecionamento de entrada: < arquivo_protegido
+    Retorna a identificação da infração ou None caso o comando seja seguro.
+    """
+    # Checagem de redirecionamento de entrada (< arquivo)
+    for m in re.finditer(r"(?:^|[^<])<\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s>&|;]+))", comando):
+        src = m.group(1) or m.group(2) or m.group(3)
+        if src and caminho_protegido(src.strip(), modo="leitura"):
+            return f"redirecionamento_origem_protegida: {src.strip()}"
+
+    subcomandos = re.split(r"&&|\|\||[&|;]", comando)
+    for sub in subcomandos:
+        sub = sub.strip()
+        if not sub:
+            continue
+        raw_tokens = re.findall(r'"([^"]+)"|\'([^\']+)\'|(\S+)', sub)
+        tokens = [t[0] or t[1] or t[2] for t in raw_tokens]
+        if not tokens:
+            continue
+
+        # Ignora wrappers comuns como cmd /c ou powershell -c
+        idx = 0
+        if tokens[idx].lower() in ("cmd", "cmd.exe") and len(tokens) > idx + 2:
+            if tokens[idx + 1].lower() in ("/c", "/k"):
+                idx += 2
+        elif tokens[idx].lower() in ("powershell", "powershell.exe", "pwsh", "pwsh.exe") and len(tokens) > idx + 2:
+            if tokens[idx + 1].lower() in ("-c", "-command"):
+                idx += 2
+
+        if idx >= len(tokens):
+            continue
+
+        cmd_nome = tokens[idx].lower()
+        args = tokens[idx + 1:]
+
+        # Git show / git diff
+        if cmd_nome == "git" and args:
+            sub_git = args[0].lower()
+            if sub_git in ("show", "diff"):
+                for a in args[1:]:
+                    if a.startswith("-") and not (":" in a and not a.startswith("--")):
+                        continue
+                    if caminho_protegido(a, modo="leitura"):
+                        return f"comando_toca_protegido: git {sub_git} {a}"
+
+        # Comandos de leitura
+        elif cmd_nome in LEITURA_COMANDOS:
+            for a in args:
+                if a.startswith("/") or (a.startswith("-") and len(a) > 1 and not a.startswith("--")):
+                    continue
+                if caminho_protegido(a, modo="leitura"):
+                    return f"comando_toca_protegido: {cmd_nome} {a}"
+
+        # Comandos de escrita
+        elif cmd_nome in ESCRITA_COMANDOS:
+            for a in args:
+                if a.startswith("/") or a.startswith("-"):
+                    continue
+                if caminho_protegido(a, modo="escrita") or caminho_protegido(a, modo="leitura"):
+                    return f"comando_toca_protegido: {cmd_nome} {a}"
+
+    return None
 
 
 def comando_bloqueado(comando: str) -> Optional[str]:
     """
-    Função pura que avalia se o comando contém padrões destrutivos de sistema no cmd.exe.
+    Função pura que avalia se o comando contém padrões destrutivos de sistema no cmd.exe
+    ou tenta ler/escrever em arquivos ou destinos protegidos.
     Retorna a string do padrão que casou ou None caso seja permitido.
     """
     cmd_lower = comando.strip().lower()
@@ -72,6 +190,10 @@ def comando_bloqueado(comando: str) -> Optional[str]:
     destino = _destino_redirecionamento(comando)
     if destino and _destino_redirecionamento_e_protegido(destino):
         return r"redirecionamento_destino_protegido"
+
+    toca_prot = comando_toca_protegido(comando)
+    if toca_prot:
+        return toca_prot
 
     return None
 
@@ -97,7 +219,7 @@ def _resolver_caminho_seguro(
     """
     Valida e resolve o caminho relativo ao base_dir (default cwd).
     Levanta ValueError se tentar path traversal para fora do base_dir
-    ou se tentar acessar caminhos protegidos do projeto.
+    ou se tentar acessar caminhos protegidos do projeto via caminho_protegido.
     """
     raiz = (base_dir or Path.cwd()).resolve()
     alvo = (raiz / caminho).resolve()
@@ -106,19 +228,8 @@ def _resolver_caminho_seguro(
     except ValueError:
         raise ValueError(f"Caminho fora do diretório do projeto: {caminho}")
 
-    partes = [p.lower() for p in relativo.parts]
-    if partes:
-        # Arquivo .env na raiz ou em qualquer nível
-        if ".env" in partes or partes[0] == ".env":
-            raise ValueError(f"caminho protegido: {caminho}")
-
-        # Qualquer coisa dentro de .git/ ou a própria pasta .git
-        if ".git" in partes or partes[0] == ".git":
-            raise ValueError(f"caminho protegido: {caminho}")
-
-        # .github/ protegido apenas para escrita
-        if operacao == "escrita" and (".github" in partes or partes[0] == ".github"):
-            raise ValueError(f"caminho protegido: {caminho}")
+    if caminho_protegido(relativo, modo=operacao) or caminho_protegido(caminho, modo=operacao):
+        raise ValueError(f"caminho protegido: {caminho}")
 
     return alvo
 
@@ -246,11 +357,18 @@ def buscar_no_projeto(
     resultados: List[str] = []
 
     for root, dirs, files in os.walk(raiz):
-        # Ignora pastas proibidas in-place
-        dirs[:] = [d for d in dirs if d not in DIRS_IGNORADOS_BUSCA]
+        # Ignora pastas proibidas e protegidas in-place
+        dirs[:] = [
+            d for d in dirs
+            if d not in DIRS_IGNORADOS_BUSCA and not caminho_protegido(d, modo="leitura")
+        ]
 
         for file in files:
             p = Path(root) / file
+            caminho_rel = p.relative_to(raiz)
+            if caminho_protegido(caminho_rel, modo="leitura"):
+                continue
+
             if ext_filtro and p.suffix.lower() != ext_filtro:
                 continue
 
@@ -263,7 +381,6 @@ def buscar_no_projeto(
                     if b"\x00" in chunk:
                         continue
 
-                caminho_rel = p.relative_to(raiz)
                 with open(p, "r", encoding="utf-8", errors="replace") as f_text:
                     for num_linha, linha in enumerate(f_text, start=1):
                         if regex.search(linha):

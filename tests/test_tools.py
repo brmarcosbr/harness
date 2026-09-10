@@ -14,6 +14,8 @@ from harness.tools import (
     TOOLS,
     TOOL_REGISTRY,
     _destino_redirecionamento,
+    caminho_protegido,
+    comando_toca_protegido,
 )
 
 
@@ -243,4 +245,91 @@ def test_tools_registry_consistencia():
     for nome in nomes:
         assert nome in TOOL_REGISTRY
         assert callable(TOOL_REGISTRY[nome])
+
+
+def test_caminho_protegido_funcao_pura():
+    # Bloqueio total (leitura e escrita)
+    assert caminho_protegido(".env", modo="leitura") is True
+    assert caminho_protegido(".env", modo="escrita") is True
+    assert caminho_protegido(".env.local", modo="leitura") is True
+    assert caminho_protegido("subpasta/.env", modo="leitura") is True
+    assert caminho_protegido(".git", modo="leitura") is True
+    assert caminho_protegido(".git/config", modo="leitura") is True
+    assert caminho_protegido(".git/config", modo="escrita") is True
+    assert caminho_protegido("HEAD:.env", modo="leitura") is True
+
+    # .github protegido apenas para escrita
+    assert caminho_protegido(".github/workflows/ci.yml", modo="leitura") is False
+    assert caminho_protegido(".github/workflows/ci.yml", modo="escrita") is True
+
+    # Arquivos normais permitidos
+    assert caminho_protegido("README.md", modo="leitura") is False
+    assert caminho_protegido("README.md", modo="escrita") is False
+    assert caminho_protegido(".gitignore", modo="leitura") is False
+    assert caminho_protegido(".gitignore", modo="escrita") is False
+    assert caminho_protegido("src/harness/tools.py", modo="escrita") is False
+
+
+def test_buscar_no_projeto_pula_caminhos_protegidos(tmp_path):
+    # .env e .git/config contêm a chave, mas devem ser ignorados pela busca
+    (tmp_path / ".env").write_text("SEGREDO_CRITICO=12345", encoding="utf-8")
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir(parents=True)
+    (git_dir / "config").write_text("SEGREDO_CRITICO=12345", encoding="utf-8")
+
+    # Arquivo normal no projeto contém a chave
+    (tmp_path / "modulo.py").write_text("chave = 'SEGREDO_CRITICO'\n", encoding="utf-8")
+
+    res = buscar_no_projeto("SEGREDO_CRITICO", base_dir=tmp_path)
+    assert res["sucesso"] is True
+    assert res["total"] == 1
+    assert "modulo.py:1:chave = 'SEGREDO_CRITICO'" in res["resultados"][0]
+    # Garante que nenhum resultado veio de .env ou .git
+    for r in res["resultados"]:
+        assert not r.startswith(".env:")
+        assert not r.startswith(".git:")
+
+
+def test_comando_toca_protegido_leitura_e_escrita():
+    comandos_leitura_proibidos = [
+        "type .env",
+        "cat .env",
+        "more .env",
+        "findstr SECRET .env",
+        "head -n 10 .env",
+        "tail -n 10 .env",
+        "Get-Content .env",
+        "gc .env",
+        "git show HEAD:.env",
+        "git diff .env",
+        "sort < .env",
+        "dir & type .env",
+        "echo safe && cat sub/.env",
+    ]
+    for cmd in comandos_leitura_proibidos:
+        assert comando_bloqueado(cmd) is not None, f"Deveria ter bloqueado leitura de protegido: {cmd}"
+
+    comandos_escrita_proibidos = [
+        "copy safe.txt .env",
+        "move safe.txt .env",
+        "xcopy dir .git",
+        "robocopy dir .git",
+        "mklink link .env",
+        "attrib +h .env",
+        "icacls .env /grant Everyone:F",
+        "copy novidade.yml .github/workflows/ci.yml",
+    ]
+    for cmd in comandos_escrita_proibidos:
+        assert comando_bloqueado(cmd) is not None, f"Deveria ter bloqueado escrita em protegido: {cmd}"
+
+    comandos_permitidos = [
+        "type README.md",
+        "copy a.txt b.txt",
+        "git diff",
+        "git show HEAD:README.md",
+        "findstr def src/harness/tools.py",
+    ]
+    for cmd in comandos_permitidos:
+        assert comando_bloqueado(cmd) is None, f"Deveria ter permitido: {cmd}"
+
 
