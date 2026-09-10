@@ -547,7 +547,10 @@ def validar_comando_whitelist(
             "--no-prefix", "--src-prefix", "--dst-prefix",
             "--diff-merges",
         )
-        flags_patch = ("-p", "-u", "--patch", "--textconv", "-c", "--cc")
+        flags_patch = (
+            "-p", "-u", "--patch", "--textconv", "-c", "--cc",
+            "--patch-with-stat", "--patch-with-raw", "--raw"
+        )
 
         for a in args[2:]:
             a_lower = a.lower()
@@ -746,65 +749,141 @@ def _desescapar_caminho_git(p: str) -> str:
     return p
 
 
+def _filtrar_linha_resumo_git(linha: str) -> str:
+    """
+    Redige linhas de saída de resumo do git (--stat, --name-only, --name-status, raw)
+    que façam referência a arquivos protegidos (ex.: .env).
+    """
+    # 1. Checa formato --stat: '  .env | 1 +' ou '  path/to/.env | 2 +-'
+    m_stat = re.match(r"^(\s*)(.+?)\s*\|\s*(\d+|\bBin\b).*", linha)
+    if m_stat:
+        indent = m_stat.group(1)
+        alvo = m_stat.group(2).strip()
+        # Trata renomeação 'a => b' ou '{a => b}/c'
+        if "=>" in alvo:
+            partes_alvo = re.split(r"\s*=>\s*", alvo)
+            for p in partes_alvo:
+                p_limpo = _desescapar_caminho_git(p.strip("{ }"))
+                if caminho_protegido(p_limpo, modo="leitura"):
+                    return f"{indent}[arquivo protegido omitido pela política de segurança]\n"
+        else:
+            p_limpo = _desescapar_caminho_git(alvo)
+            if caminho_protegido(p_limpo, modo="leitura"):
+                return f"{indent}[arquivo protegido omitido pela política de segurança]\n"
+        return linha
+
+    # 2. Checa formato --name-status ou --raw com tab
+    if "\t" in linha:
+        partes = linha.rstrip("\r\n").split("\t")
+        if any(caminho_protegido(_desescapar_caminho_git(p), modo="leitura") for p in partes[1:]):
+            return "[arquivo protegido omitido pela política de segurança]\n"
+        return linha
+
+    # 3. Checa formato --name-only (linha é exatamente o caminho)
+    linha_limpa = linha.strip()
+    if linha_limpa:
+        p_limpo = _desescapar_caminho_git(linha_limpa)
+        if caminho_protegido(p_limpo, modo="leitura"):
+            return "[arquivo protegido omitido pela política de segurança]\n"
+
+    return linha
+
+
 def _filtrar_saida_git(stdout: str) -> str:
     """
-    Filtra blocos de saída de diff do git que contenham arquivos protegidos (ex.: .env commitado).
-    Aplica política FAIL-SAFE: caso os caminhos do cabeçalho do diff não possam ser
-    identificados com certeza, ou caso algum caminho seja protegido, o conteúdo do bloco é redigido.
-    Apenas blocos cujos caminhos foram verificados com sucesso e são inofensivos são mantidos intactos.
+    Filtra blocos de saída de diff e resumos do git que contenham arquivos protegidos (ex.: .env).
+    Aplica política FAIL-SAFE:
+    - Se a saída contiver blocos de diff (^diff --), cada bloco é verificado e redigido
+      caso contenha arquivos protegidos ou formato desconhecido.
+    - Linhas de resumo (--stat, --name-only, --name-status, raw) são redigidas para não
+      vazar nomes ou metadados de arquivos protegidos.
     """
-    if not stdout or "diff --git" not in stdout:
+    if not stdout:
         return stdout
 
-    blocos = re.split(r"(?=^diff --git )", stdout, flags=re.MULTILINE)
-    resultado = []
-    for bloco in blocos:
-        if not bloco.startswith("diff --git "):
+    if "diff --" in stdout:
+        blocos = re.split(r"(?=^diff --)", stdout, flags=re.MULTILINE)
+        resultado = []
+        for bloco in blocos:
+            if not bloco.startswith("diff --"):
+                linhas_resumo = [
+                    _filtrar_linha_resumo_git(l)
+                    for l in bloco.splitlines(keepends=True)
+                ]
+                resultado.append("".join(linhas_resumo))
+                continue
+
+            linhas = bloco.splitlines(keepends=True)
+            primeira_linha = linhas[0].rstrip("\r\n")
+
+            eh_protegido = False
+            if primeira_linha.startswith("diff --git "):
+                resto = primeira_linha[len("diff --git "):].strip()
+                m = re.match(r'^(?:"((?:[^"\\]|\\.)*)"|(\S+))\s+(?:"((?:[^"\\]|\\.)*)"|(\S+))$', resto)
+                if not m:
+                    # FAIL-SAFE: formato de cabeçalho não reconhecido com certeza -> REDIGIR
+                    resultado.append(
+                        f"{primeira_linha}\n[conteúdo de diff omitido pela política de segurança (fail-safe)]\n"
+                    )
+                    continue
+
+                raw_a = m.group(1) if m.group(1) is not None else m.group(2)
+                raw_b = m.group(3) if m.group(3) is not None else m.group(4)
+                caminho_a = _desescapar_caminho_git(raw_a)
+                caminho_b = _desescapar_caminho_git(raw_b)
+                if caminho_protegido(caminho_a, modo="leitura") or caminho_protegido(caminho_b, modo="leitura"):
+                    eh_protegido = True
+
+            elif primeira_linha.startswith(("diff --cc ", "diff --combined ")):
+                prefixo_len = len("diff --cc ") if primeira_linha.startswith("diff --cc ") else len("diff --combined ")
+                resto = primeira_linha[prefixo_len:].strip()
+                m = re.match(r'^(?:"((?:[^"\\]|\\.)*)"|(\S+))$', resto)
+                if not m:
+                    resultado.append(
+                        f"{primeira_linha}\n[conteúdo de diff omitido pela política de segurança (fail-safe)]\n"
+                    )
+                    continue
+                raw_path = m.group(1) if m.group(1) is not None else m.group(2)
+                caminho_cc = _desescapar_caminho_git(raw_path)
+                if caminho_protegido(caminho_cc, modo="leitura"):
+                    eh_protegido = True
+            else:
+                # Formato de diff desconhecido -> FAIL-SAFE
+                resultado.append(
+                    f"{primeira_linha}\n[conteúdo de diff omitido pela política de segurança (fail-safe)]\n"
+                )
+                continue
+
+            # Checa adicionalmente linhas --- e +++ até o início do hunk (@@)
+            if not eh_protegido:
+                for l in linhas[1:]:
+                    l_strip = l.strip()
+                    if l_strip.startswith("@@"):
+                        break
+                    if l_strip.startswith("--- ") or l_strip.startswith("+++ "):
+                        alvo_sub = l_strip[4:].strip()
+                        if alvo_sub and alvo_sub != "/dev/null":
+                            c_sub = _desescapar_caminho_git(alvo_sub)
+                            if caminho_protegido(c_sub, modo="leitura"):
+                                eh_protegido = True
+                                break
+
+            if eh_protegido:
+                resultado.append(
+                    f"{primeira_linha}\n[conteúdo de arquivo protegido omitido pela política de segurança]\n"
+                )
+                continue
+
             resultado.append(bloco)
-            continue
 
-        linhas = bloco.splitlines(keepends=True)
-        primeira_linha = linhas[0].rstrip("\r\n")
-        resto = primeira_linha[len("diff --git "):].strip()
-
-        # Casa caminhos com ou sem aspas, com ou sem espaços
-        m = re.match(r'^(?:"((?:[^"\\]|\\.)*)"|(\S+))\s+(?:"((?:[^"\\]|\\.)*)"|(\S+))$', resto)
-        if not m:
-            # FAIL-SAFE: formato de cabeçalho não reconhecido com certeza -> REDIGIR
-            resultado.append(
-                f"{primeira_linha}\n[conteúdo de diff omitido pela política de segurança (fail-safe)]\n"
-            )
-            continue
-
-        raw_a = m.group(1) if m.group(1) is not None else m.group(2)
-        raw_b = m.group(3) if m.group(3) is not None else m.group(4)
-        caminho_a = _desescapar_caminho_git(raw_a)
-        caminho_b = _desescapar_caminho_git(raw_b)
-
-        # Checa se qualquer dos caminhos é protegido
-        eh_protegido = caminho_protegido(caminho_a, modo="leitura") or caminho_protegido(caminho_b, modo="leitura")
-
-        # Checa adicionalmente linhas --- e +++ (defesa em profundidade)
-        if not eh_protegido:
-            for l in linhas[1:6]:
-                l_strip = l.strip()
-                if l_strip.startswith("--- ") or l_strip.startswith("+++ "):
-                    alvo_sub = l_strip[4:].strip()
-                    if alvo_sub and alvo_sub != "/dev/null":
-                        c_sub = _desescapar_caminho_git(alvo_sub)
-                        if caminho_protegido(c_sub, modo="leitura"):
-                            eh_protegido = True
-                            break
-
-        if eh_protegido:
-            resultado.append(
-                f"{primeira_linha}\n[conteúdo de arquivo protegido omitido pela política de segurança]\n"
-            )
-            continue
-
-        resultado.append(bloco)
-
-    return "".join(resultado)
+        return "".join(resultado)
+    else:
+        # Sem diffs: filtra linhas de resumo
+        linhas_resumo = [
+            _filtrar_linha_resumo_git(l)
+            for l in stdout.splitlines(keepends=True)
+        ]
+        return "".join(linhas_resumo)
 
 
 def executar_comando(comando: str, base_dir: Optional[Path] = None) -> Dict[str, Any]:

@@ -1378,4 +1378,88 @@ def test_git_bloqueio_objetos_nus_blob_e_tree(tmp_path):
     assert res_c2["codigo_saida"] == 0
 
 
+def test_git_flags_patch_compostas_e_raw_bloqueadas(tmp_path):
+    # Flags compostas e --raw devem ser bloqueadas no git diff e git log
+    res1 = executar_comando("git log --patch-with-raw -1", base_dir=tmp_path)
+    assert res1["codigo_saida"] == -1
+    assert "Flag de exibição de conteúdo/patch não permitida" in res1["stderr"]
+
+    res2 = executar_comando("git log --stat --patch-with-raw -1", base_dir=tmp_path)
+    assert res2["codigo_saida"] == -1
+    assert "Flag de exibição de conteúdo/patch não permitida" in res2["stderr"]
+
+    res3 = executar_comando("git diff --stat --patch-with-stat", base_dir=tmp_path)
+    assert res3["codigo_saida"] == -1
+    assert "Flag de exibição de conteúdo/patch não permitida" in res3["stderr"]
+
+    res4 = executar_comando("git diff --stat --raw", base_dir=tmp_path)
+    assert res4["codigo_saida"] == -1
+    assert "Flag de exibição de conteúdo/patch não permitida" in res4["stderr"]
+
+    res5 = executar_comando("git log -n 1 --raw", base_dir=tmp_path)
+    assert res5["codigo_saida"] == -1
+    assert "Flag de exibição de conteúdo/patch não permitida" in res5["stderr"]
+
+
+def test_git_redacao_metadados_resumo_e_diff_cc(tmp_path):
+    import subprocess
+    from harness.tools import _filtrar_saida_git
+
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True)
+
+    (tmp_path / "app.py").write_text("print('safe')", encoding="utf-8")
+    (tmp_path / ".env").write_text("SECRET=XYZ\n", encoding="utf-8")
+    subprocess.run(["git", "add", "app.py", ".env"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), capture_output=True)
+
+    # 1. git show --stat HEAD redige .env mas preserva app.py
+    res_stat = executar_comando("git show --stat HEAD", base_dir=tmp_path)
+    assert res_stat["codigo_saida"] == 0
+    assert "SECRET" not in res_stat["stdout"]
+    assert "app.py" in res_stat["stdout"]
+    assert ".env" not in res_stat["stdout"]
+    assert "[arquivo protegido omitido pela política de segurança]" in res_stat["stdout"]
+
+    # 2. git show --name-only HEAD redige .env
+    res_name = executar_comando("git show --name-only HEAD", base_dir=tmp_path)
+    assert res_name["codigo_saida"] == 0
+    assert "app.py" in res_name["stdout"]
+    assert ".env" not in res_name["stdout"]
+    assert "[arquivo protegido omitido pela política de segurança]" in res_name["stdout"]
+
+    # 3. git show --name-status HEAD redige .env
+    res_status = executar_comando("git show --name-status HEAD", base_dir=tmp_path)
+    assert res_status["codigo_saida"] == 0
+    assert "app.py" in res_status["stdout"]
+    assert ".env" not in res_status["stdout"]
+    assert "[arquivo protegido omitido pela política de segurança]" in res_status["stdout"]
+
+    # 4. diff --cc protegido e seguro no _filtrar_saida_git
+    diff_cc_protegido = (
+        "diff --cc .env\n"
+        "index 111,222..333\n"
+        "--- a/.env\n"
+        "+++ b/.env\n"
+        "@@@ -1,1 -1,1 +1,1 @@@\n"
+        "+SECRET_CONFLITO\n"
+    )
+    saida_cc_p = _filtrar_saida_git(diff_cc_protegido)
+    assert "SECRET_CONFLITO" not in saida_cc_p
+    assert "[conteúdo de arquivo protegido omitido pela política de segurança]" in saida_cc_p
+
+    diff_cc_seguro = (
+        "diff --cc app.py\n"
+        "index 111,222..333\n"
+        "--- a/app.py\n"
+        "+++ b/app.py\n"
+        "@@@ -1,1 -1,1 +1,1 @@@\n"
+        "+print('resolvido')\n"
+    )
+    saida_cc_s = _filtrar_saida_git(diff_cc_seguro)
+    assert "+print('resolvido')" in saida_cc_s
+
+
+
 
