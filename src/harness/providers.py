@@ -24,6 +24,13 @@ class ProviderResponse:
     tool_calls: List[Dict[str, Any]]  # Lista de {"id": str, "name": str, "args": dict}
     usage: Dict[str, int]             # {"prompt": int, "completion": int, "total": int, "cached": int}
     modelo: str
+    finish_reason: Optional[str] = None
+    aviso: Optional[str] = None
+
+
+def montar_endpoint_gemini(base_url: str, modelo: str) -> str:
+    """Monta a URL do endpoint Gemini sem expor a API key como parâmetro de query."""
+    return f"{base_url.rstrip('/')}/{modelo}:generateContent"
 
 
 class Provider(ABC):
@@ -174,9 +181,17 @@ def normalizar_resposta_gemini(data: Dict[str, Any], modelo: str) -> ProviderRes
     candidates = data.get("candidates", [])
     if not candidates:
         usage = extrair_metricas_usage(data.get("usageMetadata", {}))
-        return ProviderResponse(text="", tool_calls=[], usage=usage, modelo=modelo)
+        return ProviderResponse(
+            text="",
+            tool_calls=[],
+            usage=usage,
+            modelo=modelo,
+            finish_reason="NO_CANDIDATES",
+            aviso="Nenhum candidato retornado pela API Gemini"
+        )
 
     candidate = candidates[0]
+    finish_reason = candidate.get("finishReason")
     content = candidate.get("content", {})
     parts = content.get("parts", [])
 
@@ -202,8 +217,21 @@ def normalizar_resposta_gemini(data: Dict[str, Any], modelo: str) -> ProviderRes
             tool_calls.append(tc_dict)
             fc_index += 1
 
+    aviso = None
+    if finish_reason in {"SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"}:
+        aviso = f"Bloqueio de segurança da API Gemini: {finish_reason}"
+    elif not texto and not tool_calls and finish_reason:
+        aviso = f"Resposta vazia com finishReason: {finish_reason}"
+
     usage = extrair_metricas_usage(data.get("usageMetadata", {}))
-    return ProviderResponse(text=texto, tool_calls=tool_calls, usage=usage, modelo=modelo)
+    return ProviderResponse(
+        text=texto,
+        tool_calls=tool_calls,
+        usage=usage,
+        modelo=modelo,
+        finish_reason=finish_reason,
+        aviso=aviso
+    )
 
 
 
@@ -354,7 +382,7 @@ class GeminiProvider(Provider):
         ultimo_erro = None
 
         for mod in modelos:
-            endpoint = f"{self.base_url}/{mod}:generateContent?key={self.api_key}"
+            endpoint = montar_endpoint_gemini(self.base_url, mod)
             payload = {
                 "system_instruction": {
                     "parts": [{"text": system_prompt}]
@@ -363,11 +391,15 @@ class GeminiProvider(Provider):
                 "tools": self.tools_schema()
             }
 
+            headers = {"Content-Type": "application/json"}
+            if self.api_key:
+                headers["x-goog-api-key"] = self.api_key
+
             req_body = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(
                 endpoint,
                 data=req_body,
-                headers={"Content-Type": "application/json"},
+                headers=headers,
                 method="POST"
             )
 

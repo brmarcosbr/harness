@@ -182,8 +182,10 @@ def podar_historico(
         if any(m.get("role") in ("model", "tool") for m in bloco):
             idx_primeiro_turno_acao = idx
             break
-    else:
-        # Se só existem mensagens user, não há turnos de ação para podar
+    # Se só existem mensagens user, não há turnos de ação para podar
+    if idx_primeiro_turno_acao == len(blocos):
+        if tokens_total > teto_tokens:
+            print(f"[AVISO] contexto head+tail excede o teto de {teto_tokens} tokens ({tokens_total}) — reduza o contexto_projeto")
         return list(mensagens)
 
     head_blocos = blocos[:idx_primeiro_turno_acao]
@@ -192,6 +194,8 @@ def podar_historico(
     # Se a quantidade de turnos de ação for menor ou igual a max_turnos_manter,
     # não é seguro podar o tail recente
     if len(turnos_acao) <= max_turnos_manter:
+        if tokens_total > teto_tokens:
+            print(f"[AVISO] contexto head+tail excede o teto de {teto_tokens} tokens ({tokens_total}) — reduza o contexto_projeto")
         return list(mensagens)
 
     # Candidatos a poda: turnos entre o head e os últimos max_turnos_manter
@@ -216,5 +220,10 @@ def podar_historico(
     resultado_final: List[Dict[str, Any]] = []
     for b in head_blocos + tail_blocos:
         resultado_final.extend(b)
+
+    tokens_finais = estimar_tokens_historico(resultado_final)
+    if tokens_finais > teto_tokens:
+        print(f"[AVISO] contexto head+tail excede o teto de {teto_tokens} tokens ({tokens_finais}) — reduza o contexto_projeto")
+
     return resultado_final
 

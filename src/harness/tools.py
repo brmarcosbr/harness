@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import subprocess
 from typing import Any, Callable, Dict, List, Optional
-from harness.config import COMMAND_TIMEOUT_SECONDS, DIRS_IGNORADOS
+from harness.config import COMMAND_TIMEOUT_SECONDS, DIRS_IGNORADOS, CAMINHOS_PROTEGIDOS
 
 # Padrões bloqueados de comandos destrutivos de sistema no Windows / cmd.exe
 PADROES_BLOQUEADOS = [
@@ -89,17 +89,37 @@ def truncar_saida(texto: Any, limite: int = LIMITE_TRUNCAMENTO_SAIDA) -> str:
     return texto
 
 
-def _resolver_caminho_seguro(caminho: str, base_dir: Optional[Path] = None) -> Path:
+def _resolver_caminho_seguro(
+    caminho: str,
+    base_dir: Optional[Path] = None,
+    operacao: str = "leitura"
+) -> Path:
     """
     Valida e resolve o caminho relativo ao base_dir (default cwd).
-    Levanta ValueError se tentar path traversal para fora do base_dir.
+    Levanta ValueError se tentar path traversal para fora do base_dir
+    ou se tentar acessar caminhos protegidos do projeto.
     """
     raiz = (base_dir or Path.cwd()).resolve()
     alvo = (raiz / caminho).resolve()
     try:
-        alvo.relative_to(raiz)
+        relativo = alvo.relative_to(raiz)
     except ValueError:
         raise ValueError(f"Caminho fora do diretório do projeto: {caminho}")
+
+    partes = [p.lower() for p in relativo.parts]
+    if partes:
+        # Arquivo .env na raiz ou em qualquer nível
+        if ".env" in partes or partes[0] == ".env":
+            raise ValueError(f"caminho protegido: {caminho}")
+
+        # Qualquer coisa dentro de .git/ ou a própria pasta .git
+        if ".git" in partes or partes[0] == ".git":
+            raise ValueError(f"caminho protegido: {caminho}")
+
+        # .github/ protegido apenas para escrita
+        if operacao == "escrita" and (".github" in partes or partes[0] == ".github"):
+            raise ValueError(f"caminho protegido: {caminho}")
+
     return alvo
 
 
@@ -149,10 +169,10 @@ def executar_comando(comando: str) -> Dict[str, Any]:
 def ler_arquivo(caminho: str, base_dir: Optional[Path] = None) -> Dict[str, Any]:
     """
     Lê o conteúdo de um arquivo de texto dentro do projeto com limite de 200 KB.
-    Retorna conteúdo ou erro.
+    Retorna conteúdo ou erro. Bloqueia caminhos protegidos.
     """
     try:
-        alvo = _resolver_caminho_seguro(caminho, base_dir)
+        alvo = _resolver_caminho_seguro(caminho, base_dir, operacao="leitura")
     except ValueError as e:
         return {"sucesso": False, "erro": str(e), "conteudo": ""}
 
@@ -179,9 +199,10 @@ def ler_arquivo(caminho: str, base_dir: Optional[Path] = None) -> Dict[str, Any]
 def escrever_arquivo(caminho: str, conteudo: str, base_dir: Optional[Path] = None) -> Dict[str, Any]:
     """
     Cria ou sobrescreve um arquivo dentro do projeto com limite de 1 MB.
+    Bloqueia caminhos protegidos.
     """
     try:
-        alvo = _resolver_caminho_seguro(caminho, base_dir)
+        alvo = _resolver_caminho_seguro(caminho, base_dir, operacao="escrita")
     except ValueError as e:
         return {"sucesso": False, "erro": str(e), "bytes_escritos": 0}
 

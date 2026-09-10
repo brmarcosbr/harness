@@ -307,3 +307,14 @@ def test_mensagens_para_gemini_contents_agrupa_tool_calls_adjacentes():
             f"Roles consecutivas iguais na posição {i}: {contents[i]['role']}"
         )
 
+
+def test_montar_endpoint_gemini_sem_api_key_na_url():
+    from harness.providers import montar_endpoint_gemini
+    base = "https://generativelanguage.googleapis.com/v1beta/models"
+    modelo = "gemini-3.8-flash"
+    endpoint = montar_endpoint_gemini(base, modelo)
+
+    assert endpoint == "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
+    assert "key=" not in endpoint
+    assert "?" not in endpoint
+

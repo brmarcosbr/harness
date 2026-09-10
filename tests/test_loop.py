@@ -254,4 +254,23 @@ def test_loop_regressao_max_turns_multi_passo(monkeypatch, capsys):
     assert "Turnos utilizados: 3 de 3" in captured_3.out
 
 
+def test_loop_resposta_vazia_sem_tool_calls_nao_marca_concluido(capsys):
+    resp_vazia = ProviderResponse(
+        text="",
+        tool_calls=[],
+        usage={"prompt": 20, "completion": 0, "total": 20, "cached": 0},
+        modelo="fake-model",
+        finish_reason="SAFETY",
+        aviso="Bloqueio de segurança"
+    )
+    provider = FakeProvider(respostas=[resp_vazia])
+    resultado = executar_loop(tarefa="teste bloqueio", provider=provider, max_turns=3)
+    captured = capsys.readouterr()
+
+    assert "[AVISO] resposta vazia (possível bloqueio: SAFETY)" in captured.out
+    assert "[ATENCAO] Nao concluido: max_turns atingido sem resposta final" in captured.out
+    assert len(resultado.historico) == 1
+    assert resultado.historico[0]["role"] == "user"
+
+
 

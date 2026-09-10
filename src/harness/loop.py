@@ -214,6 +214,11 @@ def executar_loop(
                         "resultado": {"erro": f"Ferramenta desconhecida: {func_name}"}
                     })
         else:
+            if not texto_gerado:
+                finish_reason = getattr(resp, "finish_reason", None) or "DESCONHECIDO"
+                print(f"\n[AVISO] resposta vazia (possível bloqueio: {finish_reason})")
+                break
+
             # Anexa resposta final ao histórico e encerra
             mensagens.append({
                 "role": "model",

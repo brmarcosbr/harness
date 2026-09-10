@@ -143,6 +143,36 @@ def test_escrever_arquivo_cria_e_rele(tmp_path):
     assert res_ler["conteudo"] == "texto salvo"
 
 
+def test_caminhos_protegidos_leitura_e_escrita(tmp_path):
+    # .env bloqueado para leitura e escrita
+    res_ler_env = ler_arquivo(".env", base_dir=tmp_path)
+    assert res_ler_env["sucesso"] is False
+    assert "caminho protegido: .env" in res_ler_env["erro"]
+
+    res_esc_env = escrever_arquivo(".env", "SEGREDO=123", base_dir=tmp_path)
+    assert res_esc_env["sucesso"] is False
+    assert "caminho protegido: .env" in res_esc_env["erro"]
+
+    # .git bloqueado para leitura e escrita
+    res_ler_git = ler_arquivo(".git/config", base_dir=tmp_path)
+    assert res_ler_git["sucesso"] is False
+    assert "caminho protegido: .git/config" in res_ler_git["erro"]
+
+    res_esc_git = escrever_arquivo(".git/config", "alteracao", base_dir=tmp_path)
+    assert res_esc_git["sucesso"] is False
+    assert "caminho protegido: .git/config" in res_esc_git["erro"]
+
+    # .github protegido para escrita, leitura permitida
+    res_esc_github = escrever_arquivo(".github/workflows/ci.yml", "run: rm -rf", base_dir=tmp_path)
+    assert res_esc_github["sucesso"] is False
+    assert "caminho protegido: .github/workflows/ci.yml" in res_esc_github["erro"]
+
+    # escrita em src/x.py permitida
+    res_esc_valida = escrever_arquivo("src/x.py", "print('hello')", base_dir=tmp_path)
+    assert res_esc_valida["sucesso"] is True
+    assert res_esc_valida["bytes_escritos"] > 0
+
+
 def test_escrever_arquivo_path_traversal(tmp_path):
     res = escrever_arquivo("../fora.txt", "conteudo", base_dir=tmp_path)
     assert res["sucesso"] is False
