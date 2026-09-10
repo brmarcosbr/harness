@@ -324,24 +324,26 @@ _resolver_caminho_seguro = resolver_caminho_seguro
 
 def obter_env_saneado(chaves_ocultas: Optional[Set[str]] = None) -> Dict[str, str]:
     """
-    Função pura que retorna cópia de os.environ omitindo chaves sensíveis que terminem
-    com _API_KEY, _SECRET, _TOKEN, _KEY, _PASSWORD, _PASS, _PASSWD, _CREDENTIAL,
-    _CREDENTIALS, _DSN, _CONNECTION_STRING, _PRIVATE_KEY (case-insensitive) ou
-    correspondam a tais sufixos, bem como qualquer chave carregada a partir do
-    arquivo .env (CHAVES_CARREGADAS_ENV) ou explicitamente informada em chaves_ocultas.
+    Função pura que retorna cópia de os.environ omitindo variáveis que contenham termos
+    sensíveis em qualquer token delimitado por '_' (case-insensitive):
+    KEY, SECRET, TOKEN, PASSWORD, PASS, PASSWD, CREDENTIAL, CREDENTIALS, DSN, PRIVATE,
+    ou que terminem com sufixos sensíveis conhecidos (ex: APIKEY, CONNECTION_STRING),
+    bem como qualquer chave carregada do arquivo .env (CHAVES_CARREGADAS_ENV) ou informada em chaves_ocultas.
     """
     env_copia = os.environ.copy()
     chaves_proibidas_extra = set(chaves_ocultas) if chaves_ocultas else set()
-    sufixos_sensiveis = (
-        "_api_key", "_secret", "_token", "_key",
-        "_password", "_pass", "_passwd",
-        "_credential", "_credentials",
-        "_dsn", "_connection_string", "_private_key"
-    )
+    termos_sensiveis = {
+        "KEY", "SECRET", "TOKEN", "PASSWORD", "PASS", "PASSWD",
+        "CREDENTIAL", "CREDENTIALS", "DSN", "PRIVATE"
+    }
 
     for k in list(env_copia.keys()):
-        k_lower = k.lower()
-        if any(k_lower.endswith(sufixo) or k_lower == sufixo.lstrip("_") for sufixo in sufixos_sensiveis):
+        k_upper = k.upper()
+        segmentos = set(k_upper.split("_"))
+        if (
+            segmentos & termos_sensiveis
+            or any(k_upper.endswith(s) for s in ("APIKEY", "PASSWORD", "SECRET", "TOKEN", "PASSWD", "CONNECTION_STRING"))
+        ):
             env_copia.pop(k, None)
         elif k in CHAVES_CARREGADAS_ENV or k in chaves_proibidas_extra:
             env_copia.pop(k, None)
@@ -420,8 +422,8 @@ def validar_comando_whitelist(
     executavel = args[0].lower()
     if executavel not in comandos_permitidos:
         return (
-            f"Comando não permitido: '{args[0]}'. Este harness executa por whitelist.\n"
-            f"Permitidos: dir, type, python <arquivo>.py, git status|diff|log|show|ls-files, findstr, where.\n"
+            f"Comando bloqueado pela política de segurança: '{args[0]}' não permitido. Este harness executa por whitelist.\n"
+            f"Permitidos: dir, type, python <arquivo>.py, git status|diff|log|show|ls-files, findstr, where, echo.\n"
             f"Para manipular arquivos use ler_arquivo / escrever_arquivo / buscar_no_projeto."
         )
 
@@ -606,16 +608,7 @@ def executar_comando(comando: str, base_dir: Optional[Path] = None) -> Dict[str,
             "codigo_saida": -1
         }
 
-    # 2. Pré-checagem de segurança (camada secundária em profundidade para bloqueio imediato de comandos destrutivos)
-    padrao = comando_bloqueado(comando)
-    if padrao:
-        return {
-            "stdout": "",
-            "stderr": f"Comando bloqueado pela política de segurança (padrão: {padrao})",
-            "codigo_saida": -1
-        }
-
-    # 3. Política de execução (camada primária: validação estrita de whitelist e argumentos)
+    # 2. Política de execução (camada primária: validação estrita de whitelist e argumentos)
     raiz = (base_dir or Path.cwd()).resolve()
     erro_whitelist = validar_comando_whitelist(args, base_dir=raiz)
     if erro_whitelist:
@@ -626,6 +619,26 @@ def executar_comando(comando: str, base_dir: Optional[Path] = None) -> Dict[str,
         }
 
     executavel = args[0].lower()
+
+    # 3. Defesa em profundidade (camada secundária)
+    # Comandos como echo não usam shell e não executam nada no sistema operacional
+    if executavel != "echo":
+        padrao = comando_bloqueado(comando)
+        if padrao:
+            return {
+                "stdout": "",
+                "stderr": f"Comando bloqueado pela política de segurança (padrão: {padrao})",
+                "codigo_saida": -1
+            }
+    else:
+        # Para echo, bloqueia se tentar redirecionamento para destino protegido
+        for dest in _destinos_redirecionamento(comando):
+            if _destino_redirecionamento_e_protegido(dest.strip("\"'")):
+                return {
+                    "stdout": "",
+                    "stderr": "Comando bloqueado pela política de segurança (padrão: redirecionamento_destino_protegido)",
+                    "codigo_saida": -1
+                }
 
     # 4. Handlers nativos sem shell para builtins de comando (type, echo, dir)
     if executavel == "type":

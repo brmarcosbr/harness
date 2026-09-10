@@ -455,6 +455,11 @@ def test_obter_env_saneado_e_vazamento_subprocess(monkeypatch, tmp_path):
     monkeypatch.setenv("SSH_PRIVATE_KEY", "chave-privada-ssh")
     monkeypatch.setenv("DEFAULT_CREDENTIALS", "credenciais-default")
     monkeypatch.setenv("NORMAL_VAR", "conteudo-normal")
+    monkeypatch.setenv("MINHA_API_KEY_2", "chave-secreta-2")
+    monkeypatch.setenv("DB_PASSWORD_V2", "senha-v2")
+    monkeypatch.setenv("PATH", "caminho_padrao")
+    monkeypatch.setenv("HOME", "/home/usuario")
+    monkeypatch.setenv("LANG", "pt_BR.UTF-8")
 
     CHAVES_CARREGADAS_ENV.add("VAR_DO_ENV_PROJETO")
     monkeypatch.setenv("VAR_DO_ENV_PROJETO", "segredo-do-arquivo-env")
@@ -469,8 +474,13 @@ def test_obter_env_saneado_e_vazamento_subprocess(monkeypatch, tmp_path):
     assert "CONNECTION_STRING" not in saneado
     assert "SSH_PRIVATE_KEY" not in saneado
     assert "DEFAULT_CREDENTIALS" not in saneado
+    assert "MINHA_API_KEY_2" not in saneado
+    assert "DB_PASSWORD_V2" not in saneado
     assert "VAR_DO_ENV_PROJETO" not in saneado
     assert saneado.get("NORMAL_VAR") == "conteudo-normal"
+    assert saneado.get("PATH") == "caminho_padrao"
+    assert saneado.get("HOME") == "/home/usuario"
+    assert saneado.get("LANG") == "pt_BR.UTF-8"
 
     # Executa comando do sistema e verifica que não vaza segredos
     script_env = tmp_path / "print_env.py"
@@ -478,6 +488,8 @@ def test_obter_env_saneado_e_vazamento_subprocess(monkeypatch, tmp_path):
     res = executar_comando(f"python {script_env.name}", base_dir=tmp_path)
     assert res["codigo_saida"] == 0
     assert "chave-secreta-gemini" not in res["stdout"]
+    assert "chave-secreta-2" not in res["stdout"]
+    assert "senha-v2" not in res["stdout"]
     assert "chave-secreta-openai" not in res["stdout"]
     assert "segredo-customizado" not in res["stdout"]
     assert "token-autenticacao" not in res["stdout"]
@@ -488,6 +500,31 @@ def test_obter_env_saneado_e_vazamento_subprocess(monkeypatch, tmp_path):
     assert "credenciais-default" not in res["stdout"]
     assert "segredo-do-arquivo-env" not in res["stdout"]
     assert "conteudo-normal" in res["stdout"]
+
+
+def test_inversao_camadas_echo_inofensivo_vs_comandos_destrutivos(tmp_path):
+    # 'echo format' e 'echo shutdown' não executam shell nem comandos destrutivos -> rc=0
+    res_echo_format = executar_comando("echo format", base_dir=tmp_path)
+    assert res_echo_format["codigo_saida"] == 0
+    assert "format" in res_echo_format["stdout"]
+
+    res_echo_shutdown = executar_comando("echo shutdown", base_dir=tmp_path)
+    assert res_echo_shutdown["codigo_saida"] == 0
+    assert "shutdown" in res_echo_shutdown["stdout"]
+
+    # Comandos destrutivos reais continuam bloqueados pela whitelist/blocklist
+    res_format = executar_comando("format C:", base_dir=tmp_path)
+    assert res_format["codigo_saida"] == -1
+    assert res_format["stderr"] != ""
+
+    res_shutdown = executar_comando("shutdown /s", base_dir=tmp_path)
+    assert res_shutdown["codigo_saida"] == -1
+    assert res_shutdown["stderr"] != ""
+
+    # Tentativa de redirecionamento para arquivo protegido via echo continua bloqueada
+    res_echo_env = executar_comando("echo x > .env", base_dir=tmp_path)
+    assert res_echo_env["codigo_saida"] == -1
+    assert "bloqueado" in res_echo_env["stderr"].lower()
 
 
 def test_comando_bloqueado_descritores_numericos_redirecionamento():
