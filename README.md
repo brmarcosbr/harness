@@ -3,7 +3,7 @@
 > Loop multi-turno agnóstico de provider, tool use segura e **74,6% a 76,2% de economia de custo via context caching** (benchmark real com Gemini).
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-89%2F89%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-93%2F93%20passing-brightgreen)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 ![Zero Libs](https://img.shields.io/badge/external--deps-zero-informational)
 ![CI](https://github.com/brmarcosbr/harness/actions/workflows/ci.yml/badge.svg)
@@ -20,6 +20,7 @@ O **Agent Harness** é uma implementação em Python puro (sem frameworks pesado
   - [O Loop de Turnos](#o-loop-de-turnos)
   - [Gestão de Contexto e Prefix Invariance](#gestão-de-contexto-e-prefix-invariance)
 - [Segurança](#segurança)
+- [Política de Execução de Comandos](#política-de-execução-de-comandos)
 - [Resultados do Benchmark](#resultados-do-benchmark)
 - [Instalação e Configuração](#instalação-e-configuração)
 - [Exemplos de Uso](#exemplos-de-uso)
@@ -122,7 +123,7 @@ Quando a flag `--no-cache` é fornecida, um cabeçalho dinâmico contendo timest
 
 O harness disponibiliza 4 ferramentas nativas para o modelo:
 
-1. `executar_comando`: Execução de comandos no terminal local (`cmd.exe`).
+1. `executar_comando`: Execução de comandos controlados por whitelist sem shell (`shell=False`) no diretório do projeto.
 2. `ler_arquivo`: Leitura de arquivos de texto com limite máximo de 200 KB por arquivo.
 3. `escrever_arquivo`: Criação e sobrescrita de arquivos com limite de 1 MB.
 4. `buscar_no_projeto`: Busca por padrão regex no conteúdo dos arquivos de código/texto do projeto (ignora pastas `.venv`, `__pycache__`, `.git`, `.pytest_cache`, `build` e `dist`; permite filtro por extensão opcional; ignora binários e arquivos maiores que 1 MB; limite máximo de 50 resultados). **Não** busca por nome de arquivo.
@@ -149,6 +150,48 @@ A combinação de blocklist de comandos, inspeção de redirecionamentos, prote�
 > [!WARNING]
 > **Aviso de Segurança (Disclaimer Honesto):**
 > Heurísticas baseadas em blocklist de strings reduzem acidentes, mas **não substituem** um ambiente de isolamento real contra agentes adversariais. Para ambientes de produção abertos a códigos arbitrários, o isolamento em containers (Docker sandbox / gVisor) ou máquinas virtuais efêmeras é o próximo passo obrigatório.
+
+---
+
+## Política de Execução de Comandos
+
+A partir do Marco W7, o harness adota uma **política de execução estrita por whitelist sem shell (`shell=False`)**, eliminando a interpretação gramatical do shell como vetor de ataque e evasão.
+
+### Arquitetura em Duas Camadas
+
+1. **Camada Primária (Whitelist sem Shell):**
+   - **Execução sem Interpretador (`shell=False`):** O harness invoca executáveis externos diretamente via `subprocess.run(..., shell=False)`. Não há passagem por `cmd.exe` ou `sh`. Metacaracteres como `|`, `&`, `;`, `>`, `<`, `$VAR` e `%VAR%` não são interpretados pelo sistema operacional, sendo tratados estritamente como argumentos literais ou rejeitados.
+   - **Tokenizador Próprio (`_tokenizar`):** Divide a linha de comando por espaços respeitando aspas simples e duplas (o conteúdo entre aspas torna-se um único token sem as aspas envolventes), rejeitando comandos com aspas desbalanceadas antes de qualquer execução.
+   - **Executáveis Autorizados (`COMANDOS_PERMITIDOS`):**
+     - `dir`: Inspeção de diretórios do projeto (executada nativamente em Python para evitar dependência do shell).
+     - `type`: Leitura rápida de arquivos (executada nativamente com validação de caminhos e bloqueio a arquivos protegidos).
+     - `python`: Execução estrita de scripts Python dentro do projeto (`python <arquivo>.py`). Flags de interpretação inline (`-c`, `-m`, `-i`), referências com `..` e caminhos absolutos são categoricamente bloqueados.
+     - `git`: Apenas subcomandos de leitura informativa (`status`, `diff`, `log`, `show`, `ls-files`). Subcomandos mutantes ou destrutivos (`clean`, `reset`, `push`, `checkout`, `commit`, etc.) são rejeitados.
+     - `findstr`: Busca textual rápida (com fallback transparente em plataformas não-Windows).
+     - `where`: Localização de executáveis seguros no PATH (com fallback cross-platform via `shutil.which`).
+     - `echo`: Impressão de texto no terminal (sem permitir redirecionamento via shell).
+   - Qualquer binário fora da whitelist (ex: `rm`, `del`, `curl`, `powershell`, `cmd`, `bash`, `sh`, `nc`) é bloqueado imediatamente com código de saída `-1` e mensagem explicativa.
+
+2. **Camada Secundária (Blocklist e Proteção de Caminhos — Defesa em Profundidade):**
+   - Como salvaguarda adicional, comandos passam previamente por `comando_bloqueado` (verificação contra `PADROES_BLOQUEADOS`) e por `comando_toca_protegido`, assegurando que nenhum argumento tente ler ou alterar arquivos protegidos (`.env`, `.git/`, `.github/`).
+
+### Por que Whitelist sem Shell e Não Blocklist?
+
+A migração da abordagem de blocklist pura para a whitelist sem shell foi impulsionada por **evidências empíricas obtidas ao longo de 3 rodadas de code review multi-modelo (v1, v2, v3)**. Nessas auditorias, foram descobertos e reproduzidos **6 vetores distintos de evasão** contra a execução baseada em blocklist com `shell=True`:
+
+1. **Encadeamento de Comandos via `&` ou `&&`:** Comandos permitidos mascarando instruções subsequentes perigosas (ex: `dir & type .env`).
+2. **Redirecionamentos de Saída para Arquivos Críticos:** Uso de operadores de fluxo (`echo x > .env` ou `type a > b && echo x >> .git/config`) para corromper credenciais ou histórico git.
+3. **Wrappers de Interpretador:** Invocação através de interpretadores secundários (ex: `cmd /c "type .env"` ou `powershell -c "Get-Content .env"`), contornando checagens léxicas simples.
+4. **Redirecionamento com Descritores Numéricos:** Uso de descritores de fluxo (`echo x 1> .env` ou `echo x 2>> .env`) que escapavam de regexes padrão de redirecionamento.
+5. **Escape por Aspas e Espaços:** Variações com aspas aninhadas e caminhos relativos ofuscados que o interpretador do shell decodificava em runtime.
+6. **Execução de Código Inline via Flags:** Uso de `python -c "import os; os.system('...')"` para rodar código arbitrário sem disparar as palavras-chave do shell.
+
+Esses testes demonstraram que **nenhuma blocklist baseada em expressões regulares é capaz de cobrir exaustivamente a gramática recursiva de um shell (`cmd.exe` ou `sh`)**. Desativar o shell (`shell=False`) e limitar a execução a uma whitelist rigorosa com validação semântica de argumentos elimina toda essa classe de ataques por definição arquitetural.
+
+### Limites Residuais
+
+- **Execução de Scripts Python Locais:** O agente tem permissão para rodar `python <arquivo>.py` para executar seus próprios testes. Um script gerado pelo modelo com comportamento malicioso pode ainda ser executado caso seja gravado no projeto.
+- **Necessidade de Sandbox para Autonomia Irrestrita:** Para ambientes abertos a tarefas arbitrárias e não supervisionadas, o isolamento em nível de container (Docker sandbox / gVisor) ou microVM efêmera (Firecracker) permanece como o padrão definitivo de contenção (W8+).
 
 ---
 

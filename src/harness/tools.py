@@ -3,10 +3,17 @@
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
+import sys
 from typing import Any, Callable, Dict, List, Optional, Set, Union
 import harness.config as config
-from harness.config import COMMAND_TIMEOUT_SECONDS, DIRS_IGNORADOS, CAMINHOS_PROTEGIDOS
+from harness.config import (
+    COMMAND_TIMEOUT_SECONDS,
+    DIRS_IGNORADOS,
+    CAMINHOS_PROTEGIDOS,
+    COMANDOS_PERMITIDOS,
+)
 from harness.env import CHAVES_CARREGADAS_ENV
 
 # Padrões bloqueados de comandos destrutivos de sistema no Windows / cmd.exe
@@ -315,11 +322,153 @@ def obter_env_saneado(chaves_ocultas: Optional[Set[str]] = None) -> Dict[str, st
     return env_copia
 
 
-def executar_comando(comando: str) -> Dict[str, Any]:
+def _tokenizar(comando: str) -> List[str]:
     """
-    Executa o comando em subprocess no cmd.exe com timeout de 30s.
-    Aplica política de segurança contra comandos destrutivos e isolamento de env.
+    Função pura que divide o comando por espaços respeitando aspas simples e duplas.
+    O conteúdo entre aspas torna-se um único token sem as aspas.
+    Não expande variáveis nem interpreta metacaracteres (>, &, | são literais).
+    Levanta ValueError caso haja aspas não fechadas.
     """
+    tokens: List[str] = []
+    atual: List[str] = []
+    em_aspas: Optional[str] = None
+    teve_aspas: bool = False
+
+    for c in comando.strip():
+        if em_aspas:
+            if c == em_aspas:
+                em_aspas = None
+            else:
+                atual.append(c)
+        else:
+            if c in ('"', "'"):
+                em_aspas = c
+                teve_aspas = True
+            elif c.isspace():
+                if atual or teve_aspas:
+                    tokens.append("".join(atual))
+                    atual = []
+                    teve_aspas = False
+            else:
+                atual.append(c)
+
+    if em_aspas:
+        raise ValueError(f"Aspas não fechadas (desbalanceadas) no comando: {comando}")
+    if atual or teve_aspas:
+        tokens.append("".join(atual))
+
+    return tokens
+
+
+def validar_comando_whitelist(
+    args: List[str],
+    base_dir: Optional[Path] = None
+) -> Optional[str]:
+    """
+    Função pura que valida executável e argumentos contra a política de whitelist (W7).
+    Retorna None se o comando for permitido, ou uma mensagem de erro detalhada caso bloqueado.
+    """
+    if not args:
+        return "Comando vazio."
+
+    comandos_permitidos = getattr(config, "COMANDOS_PERMITIDOS", COMANDOS_PERMITIDOS)
+    executavel = args[0].lower()
+    if executavel not in comandos_permitidos:
+        return (
+            f"Comando não permitido: '{args[0]}'. Este harness executa por whitelist.\n"
+            f"Permitidos: dir, type, python <arquivo>.py, git status|diff|log|show|ls-files, findstr, where.\n"
+            f"Para manipular arquivos use ler_arquivo / escrever_arquivo / buscar_no_projeto."
+        )
+
+    raiz = (base_dir or Path.cwd()).resolve()
+
+    if executavel == "python":
+        if len(args) < 2:
+            return "Comando python requer um arquivo .py como argumento: 'python <arquivo>.py'."
+        alvo_py = args[1]
+        if alvo_py.startswith("-"):
+            return f"Flags de execução do Python não são permitidas: '{alvo_py}'."
+        if not alvo_py.lower().endswith(".py"):
+            return f"O alvo de execução do Python deve ser um arquivo .py: '{alvo_py}'."
+
+        partes = alvo_py.replace("\\", "/").split("/")
+        if ".." in partes:
+            return f"Caminho não pode conter '..' (fora do projeto): '{alvo_py}'."
+        if Path(alvo_py).is_absolute() or (len(alvo_py) >= 2 and alvo_py[1] == ":") or alvo_py.startswith(("/", "\\")):
+            return f"Caminho absoluto não permitido para script Python: '{alvo_py}'."
+        if caminho_protegido(alvo_py, modo="leitura"):
+            return f"Acesso a caminho protegido bloqueado: '{alvo_py}'."
+
+        arquivo_alvo = (raiz / alvo_py).resolve()
+        try:
+            arquivo_alvo.relative_to(raiz)
+        except ValueError:
+            return f"Arquivo fora do diretório do projeto: '{alvo_py}'."
+
+        if not arquivo_alvo.is_file():
+            return f"Arquivo Python não encontrado: '{alvo_py}'."
+
+    elif executavel == "git":
+        if len(args) < 2:
+            return "Subcomando git ausente. Permitidos: status, diff, log, show, ls-files."
+        subcmd = args[1].lower()
+        subcomandos_leitura = {"status", "diff", "log", "show", "ls-files"}
+        if subcmd not in subcomandos_leitura:
+            return f"Subcomando git não permitido: '{args[1]}'. Permitidos: status, diff, log, show, ls-files."
+
+        for a in args[2:]:
+            partes = a.replace("\\", "/").split("/")
+            if ".." in partes:
+                return f"Caminho não pode conter '..' (fora do projeto): '{a}'."
+            if caminho_protegido(a, modo="leitura"):
+                return f"Acesso a caminho protegido bloqueado no git: '{a}'."
+
+    elif executavel in {"type", "findstr", "where", "dir"}:
+        if executavel == "type" and len(args) < 2:
+            return "Comando type requer ao menos um arquivo: 'type <arquivo>'."
+
+        for a in args[1:]:
+            # Ignora flags curtas de comando (como /b, /s, /i, -b, -n)
+            if (a.startswith("/") or a.startswith("-")) and len(a) <= 3 and a[1:].isalnum():
+                continue
+            partes = a.replace("\\", "/").split("/")
+            if ".." in partes:
+                return f"Caminho não pode conter '..' (fora do projeto): '{a}'."
+            if Path(a).is_absolute() or (len(a) >= 2 and a[1] == ":"):
+                return f"Caminho absoluto não permitido: '{a}'."
+            if caminho_protegido(a, modo="leitura"):
+                return f"Acesso a caminho protegido bloqueado: '{a}'."
+
+    elif executavel == "echo":
+        # echo é permitido sem validação de caminhos (sem shell, metacaracteres não redirecionam)
+        pass
+
+    return None
+
+
+def executar_comando(comando: str, base_dir: Optional[Path] = None) -> Dict[str, Any]:
+    """
+    Executa o comando por whitelist estrita e com shell=False (W7).
+    Aplica blocklist secundária para defesa em profundidade e isolamento de variáveis de ambiente.
+    """
+    # 1. Tokenização própria
+    try:
+        args = _tokenizar(comando)
+    except ValueError as e:
+        return {
+            "stdout": "",
+            "stderr": f"Erro de sintaxe no comando: {e}",
+            "codigo_saida": -1
+        }
+
+    if not args:
+        return {
+            "stdout": "",
+            "stderr": "Comando vazio.",
+            "codigo_saida": -1
+        }
+
+    # 2. Camada secundária: Blocklist e caminhos protegidos (defesa em profundidade)
     padrao = comando_bloqueado(comando)
     if padrao:
         return {
@@ -328,11 +477,121 @@ def executar_comando(comando: str) -> Dict[str, Any]:
             "codigo_saida": -1
         }
 
+    # 3. Camada primária: Validação de whitelist e argumentos
+    raiz = (base_dir or Path.cwd()).resolve()
+    erro_whitelist = validar_comando_whitelist(args, base_dir=raiz)
+    if erro_whitelist:
+        return {
+            "stdout": "",
+            "stderr": erro_whitelist,
+            "codigo_saida": -1
+        }
+
+    executavel = args[0].lower()
+
+    # 4. Handlers nativos sem shell para builtins de comando (type, echo, dir)
+    if executavel == "type":
+        conteudos = []
+        for arq in args[1:]:
+            alvo = (raiz / arq).resolve()
+            if not alvo.is_file():
+                return {
+                    "stdout": "",
+                    "stderr": f"O sistema não pode encontrar o arquivo especificado: {arq}",
+                    "codigo_saida": 1
+                }
+            try:
+                conteudos.append(alvo.read_text(encoding="utf-8", errors="replace"))
+            except Exception as e:
+                return {
+                    "stdout": "",
+                    "stderr": f"Erro ao ler arquivo '{arq}': {e}",
+                    "codigo_saida": 1
+                }
+        return {
+            "stdout": "".join(conteudos),
+            "stderr": "",
+            "codigo_saida": 0
+        }
+
+    if executavel == "echo":
+        texto = " ".join(args[1:]) + "\n"
+        return {
+            "stdout": texto,
+            "stderr": "",
+            "codigo_saida": 0
+        }
+
+    if executavel == "dir":
+        alvo_dir = raiz
+        caminhos_espec = [a for a in args[1:] if not a.startswith(("/", "-"))]
+        if caminhos_espec:
+            alvo_dir = (raiz / caminhos_espec[0]).resolve()
+
+        if not alvo_dir.exists():
+            return {
+                "stdout": "",
+                "stderr": "O sistema não pode encontrar o arquivo ou diretório especificado.",
+                "codigo_saida": 1
+            }
+
+        eh_bare = any(a.lower() in ("/b", "-b") for a in args[1:])
+        try:
+            itens = sorted(os.listdir(alvo_dir))
+        except Exception as e:
+            return {"stdout": "", "stderr": f"Erro ao listar diretório: {e}", "codigo_saida": 1}
+
+        if eh_bare:
+            saida = "\n".join(itens) + ("\n" if itens else "")
+        else:
+            linhas = [f" Pasta de {alvo_dir}", ""]
+            for item in itens:
+                p = alvo_dir / item
+                linhas.append(f"{'<DIR>' if p.is_dir() else '     '} {item}")
+            saida = "\n".join(linhas) + "\n"
+
+        return {
+            "stdout": saida,
+            "stderr": "",
+            "codigo_saida": 0
+        }
+
+    # 5. Handlers para where e findstr em plataformas onde não existem nativamente (ex.: Linux CI)
+    if executavel == "where" and not shutil.which("where"):
+        caminhos_encontrados = [shutil.which(a) for a in args[1:] if shutil.which(a)]
+        if caminhos_encontrados:
+            return {"stdout": "\n".join(caminhos_encontrados) + "\n", "stderr": "", "codigo_saida": 0}
+        return {"stdout": "", "stderr": "INFO: Could not find files for the given pattern(s).\n", "codigo_saida": 1}
+
+    if executavel == "findstr" and not shutil.which("findstr"):
+        nao_flags = [a for a in args[1:] if not a.startswith(("/", "-"))]
+        if len(nao_flags) < 2:
+            return {"stdout": "", "stderr": "Uso: findstr [opções] padrão arquivo", "codigo_saida": 2}
+        padrao = nao_flags[0]
+        linhas_match = []
+        for nome_arq in nao_flags[1:]:
+            p_arq = (raiz / nome_arq).resolve()
+            if p_arq.is_file():
+                try:
+                    for linha in p_arq.read_text(encoding="utf-8", errors="replace").splitlines():
+                        if padrao in linha:
+                            linhas_match.append(linha)
+                except Exception:
+                    pass
+        if linhas_match:
+            return {"stdout": "\n".join(linhas_match) + "\n", "stderr": "", "codigo_saida": 0}
+        return {"stdout": "", "stderr": "", "codigo_saida": 1}
+
+    # 6. Execução via subprocess sem shell (shell=False)
+    args_exec = list(args)
+    if executavel == "python":
+        args_exec[0] = sys.executable
+
     try:
         resultado = subprocess.run(
-            comando,
-            shell=True,
-            cwd=os.getcwd(),
+            args_exec,
+            shell=False,
+            cwd=str(raiz),
             capture_output=True,
             text=True,
             timeout=COMMAND_TIMEOUT_SECONDS,

@@ -18,6 +18,8 @@ from harness.tools import (
     caminho_protegido,
     comando_toca_protegido,
     obter_env_saneado,
+    _tokenizar,
+    validar_comando_whitelist,
 )
 
 
@@ -439,7 +441,7 @@ def test_comando_bloqueado_wrappers_e_evasao():
         assert comando_bloqueado(cmd) is None, f"Deveria ter permitido comando seguro: {cmd}"
 
 
-def test_obter_env_saneado_e_vazamento_subprocess(monkeypatch):
+def test_obter_env_saneado_e_vazamento_subprocess(monkeypatch, tmp_path):
     from harness.env import CHAVES_CARREGADAS_ENV
 
     monkeypatch.setenv("GEMINI_API_KEY", "chave-secreta-gemini")
@@ -462,7 +464,9 @@ def test_obter_env_saneado_e_vazamento_subprocess(monkeypatch):
     assert saneado.get("NORMAL_VAR") == "conteudo-normal"
 
     # Executa comando do sistema e verifica que não vaza segredos
-    res = executar_comando("set")
+    script_env = tmp_path / "print_env.py"
+    script_env.write_text("import os\nfor k, v in os.environ.items():\n    print(f'{k}={v}')\n", encoding="utf-8")
+    res = executar_comando(f"python {script_env.name}", base_dir=tmp_path)
     assert res["codigo_saida"] == 0
     assert "chave-secreta-gemini" not in res["stdout"]
     assert "chave-secreta-openai" not in res["stdout"]
@@ -470,6 +474,7 @@ def test_obter_env_saneado_e_vazamento_subprocess(monkeypatch):
     assert "token-autenticacao" not in res["stdout"]
     assert "chave-aws" not in res["stdout"]
     assert "segredo-do-arquivo-env" not in res["stdout"]
+    assert "conteudo-normal" in res["stdout"]
 
 
 def test_comando_bloqueado_descritores_numericos_redirecionamento():
@@ -503,6 +508,97 @@ def test_buscar_no_projeto_protecao_redos_alternancia(tmp_path):
     res_alt2 = buscar_no_projeto("(foo|foobar)+", base_dir=tmp_path)
     assert res_alt2["sucesso"] is False
     assert res_alt2["erro"] == "padrão potencialmente catastrófico (quantificador aninhado ou alternância repetida)"
+
+
+def test_tokenizar_comando():
+    assert _tokenizar("dir /b") == ["dir", "/b"]
+    assert _tokenizar('type "meu arquivo.txt"') == ["type", "meu arquivo.txt"]
+    assert _tokenizar("findstr 'palavra com espaco' doc.txt") == ["findstr", "palavra com espaco", "doc.txt"]
+    assert _tokenizar("echo x > .env") == ["echo", "x", ">", ".env"]
+    assert _tokenizar("dir & type safe.txt") == ["dir", "&", "type", "safe.txt"]
+    assert _tokenizar("echo $VAR %VAR%") == ["echo", "$VAR", "%VAR%"]
+
+    with pytest.raises(ValueError, match="desbalanceadas"):
+        _tokenizar('type "arquivo.txt')
+
+    with pytest.raises(ValueError, match="desbalanceadas"):
+        _tokenizar("findstr 'padrao")
+
+
+def test_executar_comando_whitelist_tabela_permitidos(tmp_path):
+    arquivo_teste = tmp_path / "README.md"
+    arquivo_teste.write_text("Linha 1: Harness Agent\nLinha 2: Outra coisa\n", encoding="utf-8")
+
+    script_py = tmp_path / "bench_test_math.py"
+    script_py.write_text("print('resultado: 42')", encoding="utf-8")
+
+    # dir
+    res_dir = executar_comando("dir", base_dir=tmp_path)
+    assert res_dir["codigo_saida"] == 0
+    assert "README.md" in res_dir["stdout"]
+
+    # dir /b
+    res_dir_b = executar_comando("dir /b", base_dir=tmp_path)
+    assert res_dir_b["codigo_saida"] == 0
+    assert "README.md" in res_dir_b["stdout"]
+
+    # type README.md
+    res_type = executar_comando("type README.md", base_dir=tmp_path)
+    assert res_type["codigo_saida"] == 0
+    assert "Harness Agent" in res_type["stdout"]
+
+    # python bench_test_math.py
+    res_py = executar_comando("python bench_test_math.py", base_dir=tmp_path)
+    assert res_py["codigo_saida"] == 0
+    assert "resultado: 42" in res_py["stdout"]
+
+    # git status (no repo real do projeto)
+    res_git_status = executar_comando("git status")
+    assert res_git_status["codigo_saida"] == 0
+    assert "branch" in res_git_status["stdout"].lower()
+
+    # git log (no repo real do projeto)
+    res_git_log = executar_comando("git log -n 1")
+    assert res_git_log["codigo_saida"] == 0
+    assert "commit" in res_git_log["stdout"].lower()
+
+    # findstr "Harness" README.md
+    res_findstr = executar_comando('findstr "Harness" README.md', base_dir=tmp_path)
+    assert res_findstr["codigo_saida"] == 0
+    assert "Harness Agent" in res_findstr["stdout"]
+
+    # where python
+    res_where = executar_comando("where python")
+    assert res_where["codigo_saida"] == 0
+    assert "python" in res_where["stdout"].lower()
+
+
+def test_executar_comando_whitelist_tabela_proibidos(tmp_path):
+    comandos_proibidos = [
+        "rm -rf .",
+        "del /s *.py",
+        'cmd /c "type .env"',
+        'powershell -c "Get-Content .env"',
+        "type .env",
+        'python -c "import os;os.system(\'calc\')"',
+        r"python C:\Windows\System32\qualquer.py",
+        "git clean -fdx",
+        "git reset --hard",
+        "git push",
+        "echo x > .env",
+        "comando_inexistente",
+    ]
+    for cmd in comandos_proibidos:
+        res = executar_comando(cmd, base_dir=tmp_path)
+        assert res["codigo_saida"] == -1, f"Deveria ter retornado codigo -1 para: {cmd}"
+        assert res["stderr"] != "", f"Deveria ter stderr explicativo para: {cmd}"
+
+
+def test_invariante_sem_shell_true_em_tools():
+    arquivo_tools = Path(__file__).parent.parent / "src" / "harness" / "tools.py"
+    conteudo = arquivo_tools.read_text(encoding="utf-8")
+    assert "shell=True" not in conteudo
+
 
 
 
