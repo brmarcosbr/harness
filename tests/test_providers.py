@@ -1,6 +1,8 @@
 """Testes unitários para conversões de providers (funções puras, sem rede)."""
 
 import json
+from typing import Any, Dict
+
 from harness.tools import TOOLS
 from harness.providers import (
     gemini_tool_schema,
@@ -382,3 +384,104 @@ def test_normalizar_resposta_openai_finish_reason_e_aviso():
     assert resp_empty.aviso == "Resposta vazia com finish_reason: stop"
 
 
+
+
+# ============================================================================
+# Esforço de raciocínio e teto de saída enviados no corpo da requisição (rodada E1)
+# ============================================================================
+
+class _RespostaFake:
+    """Context manager mínimo que devolve um ChatCompletion vazio, no formato do urlopen."""
+
+    def __init__(self, payload: Dict[str, Any]):
+        self._payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self) -> bytes:
+        return json.dumps(self._payload).encode("utf-8")
+
+
+def _capturar_corpo_enviado(monkeypatch) -> Dict[str, Any]:
+    """Instala um urlopen falso que registra o corpo JSON enviado ao endpoint."""
+    import urllib.request
+    capturado: Dict[str, Any] = {}
+
+    def fake_urlopen(req, timeout=None):
+        capturado["url"] = req.full_url
+        capturado["corpo"] = json.loads(req.data.decode("utf-8"))
+        return _RespostaFake({
+            "model": capturado["corpo"].get("model"),
+            "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        })
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    return capturado
+
+
+def test_corpo_openai_compat_declara_esforco_e_teto(monkeypatch):
+    from harness.providers import OpenAICompatProvider
+
+    capturado = _capturar_corpo_enviado(monkeypatch)
+    provider = OpenAICompatProvider(api_key="chave-falsa", nome="deepseek")
+    provider.gerar(mensagens=[{"role": "user", "text": "oi"}], system_prompt="sys")
+
+    corpo = capturado["corpo"]
+    assert corpo["model"] == "deepseek-flash"
+    assert corpo["reasoning_effort"] == "high"
+    assert corpo["max_tokens"] == 65536
+    # O resto do corpo continua como estava
+    assert corpo["messages"][0] == {"role": "system", "content": "sys"}
+    assert "tools" in corpo
+
+
+def test_corpo_respeita_override_de_ambiente(monkeypatch):
+    from harness.providers import OpenAICompatProvider
+
+    monkeypatch.setenv("HARNESS_REASONING_EFFORT", "low")
+    monkeypatch.setenv("HARNESS_MAX_TOKENS", "4096")
+
+    capturado = _capturar_corpo_enviado(monkeypatch)
+    provider = OpenAICompatProvider(api_key="chave-falsa", nome="deepseek")
+    provider.gerar(mensagens=[{"role": "user", "text": "oi"}], system_prompt="sys")
+
+    assert capturado["corpo"]["reasoning_effort"] == "low"
+    assert capturado["corpo"]["max_tokens"] == 4096
+
+    # O valor efetivo exposto pelo provider acompanha o override (é o que vai para as métricas)
+    assert provider.reasoning_effort == "low"
+    assert provider.max_tokens == 4096
+
+
+def test_override_invalido_cai_no_padrao_com_aviso(monkeypatch, capsys):
+    from harness.config import MAX_TOKENS_PADRAO, REASONING_EFFORT_PADRAO, obter_max_tokens, obter_reasoning_effort
+
+    monkeypatch.setenv("HARNESS_REASONING_EFFORT", "turbo")
+    monkeypatch.setenv("HARNESS_MAX_TOKENS", "0")
+
+    assert obter_reasoning_effort() == REASONING_EFFORT_PADRAO == "high"
+    assert obter_max_tokens() == MAX_TOKENS_PADRAO == 65536
+
+    avisos = capsys.readouterr().err
+    assert "HARNESS_REASONING_EFFORT" in avisos
+    assert "HARNESS_MAX_TOKENS" in avisos
+
+
+def test_provider_gemini_nao_envia_campos_incompativeis(monkeypatch):
+    from harness.providers import GeminiProvider
+
+    capturado = _capturar_corpo_enviado(monkeypatch)
+    provider = GeminiProvider(api_key="chave-falsa")
+    provider.gerar(mensagens=[{"role": "user", "text": "oi"}], system_prompt="sys")
+
+    corpo = capturado["corpo"]
+    # A API REST do Gemini recusa reasoning_effort/max_tokens: os campos não vão no corpo
+    assert "reasoning_effort" not in corpo
+    assert "max_tokens" not in corpo
+    assert provider.reasoning_effort is None
+    assert provider.max_tokens is None

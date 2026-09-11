@@ -11,6 +11,8 @@ from harness.config import (
     DEFAULT_FALLBACKS,
     DEFAULT_MODELS,
     PROVIDER_PRECOS,
+    obter_max_tokens,
+    obter_reasoning_effort,
 )
 from harness.errors import HarnessError
 from harness.tools import TOOLS
@@ -39,6 +41,20 @@ class Provider(ABC):
     nome: str
     modelo_ativo: str
     precos: Dict[str, float]
+
+    @property
+    def reasoning_effort(self) -> Optional[str]:
+        """
+        Esforço de raciocínio efetivamente enviado no corpo da requisição.
+        Resolvido a cada acesso (e não no construtor) para que o override por ambiente
+        valha também para o valor registrado nas métricas. None = campo não enviado.
+        """
+        return obter_reasoning_effort()
+
+    @property
+    def max_tokens(self) -> Optional[int]:
+        """Teto de tokens de saída efetivamente enviado no corpo da requisição. None = não enviado."""
+        return obter_max_tokens()
 
     @abstractmethod
     def gerar(self, mensagens: List[Dict[str, Any]], system_prompt: str) -> ProviderResponse:
@@ -382,6 +398,17 @@ class GeminiProvider(Provider):
         self.fallbacks = fallbacks if fallbacks is not None else DEFAULT_FALLBACKS["gemini"]
         self.precos = PROVIDER_PRECOS["gemini"]
 
+    @property
+    def reasoning_effort(self) -> Optional[str]:
+        # A API REST do Gemini não aceita `reasoning_effort` no corpo: enviá-lo resultaria em
+        # HTTP 400. O controle equivalente (thinkingConfig/generationConfig) tem outro formato
+        # e fica fora do escopo desta rodada, então aqui o campo não é enviado nem registrado.
+        return None
+
+    @property
+    def max_tokens(self) -> Optional[int]:
+        return None
+
     def tools_schema(self) -> List[Dict[str, Any]]:
         return gemini_tool_schema()
 
@@ -468,11 +495,20 @@ class OpenAICompatProvider(Provider):
         endpoint = f"{self.base_url}/chat/completions"
         openai_msgs = mensagens_para_openai(mensagens, system_prompt)
 
-        payload = {
+        payload: Dict[str, Any] = {
             "model": self.modelo_ativo,
             "messages": openai_msgs,
             "tools": self.tools_schema()
         }
+
+        # Esforço e teto de saída vão declarados no corpo: sem eles, custo e comprimento
+        # das respostas ficariam a cargo do default do servidor (que já mudou uma vez).
+        effort = self.reasoning_effort
+        if effort is not None:
+            payload["reasoning_effort"] = effort
+        teto_saida = self.max_tokens
+        if teto_saida is not None:
+            payload["max_tokens"] = teto_saida
 
         req_body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(

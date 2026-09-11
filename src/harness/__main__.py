@@ -5,10 +5,11 @@ import os
 import sys
 from pathlib import Path
 from harness.config import MAX_TURNS
+from harness.bench import REPETICOES_MINIMAS, REPETICOES_PADRAO
 from harness.contexto import gerar_contexto_repo
 from harness.env import carregar_env
 from harness.errors import HarnessError
-from harness.loop import executar_loop
+from harness.loop import executar_loop, garantir_saida_utf8
 from harness.providers import criar_provider
 
 
@@ -68,7 +69,19 @@ def criar_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--bench",
         action="store_true",
-        help="Executa a suíte de benchmark de tarefas com medição de cache ON vs OFF."
+        help="Executa a suíte de benchmark nas três condições (cache ON, cache OFF e sem poda)."
+    )
+    parser.add_argument(
+        "--repeticoes",
+        type=int,
+        default=REPETICOES_PADRAO,
+        help=f"Repetições por condição no benchmark (padrão: {REPETICOES_PADRAO}; mínimo: {REPETICOES_MINIMAS})."
+    )
+    parser.add_argument(
+        "--cobertura",
+        type=str,
+        default="nao_declarada",
+        help="Cobertura da conta de API declarada no cabeçalho do resultado ('credito', 'pago' ou 'nao_declarada')."
     )
     parser.add_argument(
         "--max-turns",
@@ -87,6 +100,8 @@ def parse_args(args=None) -> argparse.Namespace:
 
 
 def main():
+    # Antes de qualquer saída: terminal hostil não pode derrubar uma execução já paga.
+    garantir_saida_utf8()
     args = parse_args()
 
     if args.contexto and args.contexto_repo:
@@ -147,11 +162,13 @@ def main():
                 )
             if args.no_cache:
                 print(
-                    "[AVISO] --no-cache ignorado no modo --bench: o benchmark avalia ambos os regimes (ON e OFF).",
+                    "[AVISO] --no-cache ignorado no modo --bench: o benchmark avalia as três condições "
+                    "(cache ON, cache OFF e sem poda).",
                     file=sys.stderr
                 )
 
-            from harness.bench import imprimir_tabela, rodar_benchmark
+            from harness.bench import (agregar_por_celula, imprimir_resumo_celulas,
+                                       imprimir_tabela, rodar_benchmark)
 
             def factory():
                 return criar_provider(
@@ -161,8 +178,14 @@ def main():
                     base_url=os.environ.get("HARNESS_BASE_URL", None)
                 )
 
-            resultados = rodar_benchmark(provider_factory=factory, max_turns=args.max_turns)
+            resultados = rodar_benchmark(
+                provider_factory=factory,
+                max_turns=args.max_turns,
+                repeticoes=args.repeticoes,
+                cobertura=args.cobertura,
+            )
             imprimir_tabela(resultados)
+            imprimir_resumo_celulas(agregar_por_celula(resultados))
         else:
             tarefa_final = args.tarefa if args.tarefa is not None else "liste os arquivos desta pasta"
             provider = criar_provider(

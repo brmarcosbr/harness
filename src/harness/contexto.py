@@ -4,10 +4,13 @@ import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
-from harness.config import DIRS_IGNORADOS, MAX_TURNOS_MANTER_PODA
+from harness.config import ARQUIVOS_AGENTE_IGNORADOS, DIRS_IGNORADOS, MAX_TURNOS_MANTER_PODA
 from harness.tools import caminho_protegido, resolver_caminho_seguro
 
 PREFIXO_CONTEXTO = "\n\n=== CONTEXTO DO PROJETO ===\n"
+
+# Comparação de nomes de arquivo de agente sem depender de caixa (Windows/macOS são case-insensitive)
+ARQUIVOS_AGENTE_IGNORADOS_CASEFOLD = {nome.casefold() for nome in ARQUIVOS_AGENTE_IGNORADOS}
 
 
 def sha256_head(head_texto: str) -> str:
@@ -28,7 +31,9 @@ def gerar_contexto_repo(
     Varre o diretório ignorando DIRS_IGNORADOS e caminhos protegidos segundo resolver_caminho_seguro,
     ordena arquivos alfabeticamente pelo caminho relativo, e concatena arquivos inteiros
     até atingir o limite_tokens sem partir nenhum arquivo ao meio.
-    Pula arquivos binários (com byte nulo) e arquivos maiores que 1 MB.
+    Pula arquivos binários (com byte nulo), arquivos maiores que 1 MB e arquivos de instrução
+    do agente (ARQUIVOS_AGENTE_IGNORADOS, na raiz ou em subdiretórios): eles mudam quando as
+    regras do agente mudam e quebrariam a comparabilidade entre medições.
     """
     base_path = Path(base_dir).resolve()
     ext_tuple = tuple(extensoes)
@@ -48,6 +53,9 @@ def gerar_contexto_repo(
         dirs[:] = sorted(dirs_validos)
 
         for file in files:
+            if file.casefold() in ARQUIVOS_AGENTE_IGNORADOS_CASEFOLD:
+                continue
+
             p = Path(root) / file
             try:
                 alvo_seguro, relativo = resolver_caminho_seguro(

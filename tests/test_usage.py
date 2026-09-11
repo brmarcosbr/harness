@@ -114,3 +114,40 @@ def test_precos_aviso_data_antiga_e_override_ambiente(monkeypatch, capsys):
     monkeypatch.delenv("PRECO_GEMINI_INPUT", raising=False)
     assert PROVIDER_PRECOS["gemini"]["input"] == TABELA_PRECOS_PADRAO["gemini"]["input"]
 
+
+def test_tabela_deepseek_oficial_e_modelo_default(monkeypatch):
+    from harness.config import (
+        DEFAULT_MODELS,
+        PRECOS_CONFERIDOS_EM,
+        PROVIDER_PRECOS,
+        TABELA_PRECOS_PADRAO,
+        obter_precos_com_override,
+    )
+
+    for chave in ("PRECO_DEEPSEEK_INPUT", "PRECO_DEEPSEEK_OUTPUT", "PRECO_DEEPSEEK_CACHE"):
+        monkeypatch.delenv(chave, raising=False)
+
+    # Oficial conferido em 2026-09-11 (api-docs.deepseek.com/quick_start/pricing),
+    # modelo deepseek-flash, valores OFF-PEAK: 0.15 / 0.60 / 0.003
+    esperado = {"input": 0.15, "output": 0.60, "cache": 0.003}
+    assert TABELA_PRECOS_PADRAO["deepseek"] == esperado
+    assert obter_precos_com_override()["deepseek"] == esperado
+    assert PROVIDER_PRECOS["deepseek"] == esperado
+    assert PRECOS_CONFERIDOS_EM == "2026-09-11"
+
+    # O nome antigo é alias aposentado: o default tem que travar no modelo servido
+    assert DEFAULT_MODELS["deepseek"] == "deepseek-flash"
+
+
+def test_override_de_preco_deepseek_vence_a_tabela(monkeypatch):
+    from harness.config import PROVIDER_PRECOS, TABELA_PRECOS_PADRAO, obter_precos_com_override
+
+    monkeypatch.setenv("PRECO_DEEPSEEK_INPUT", "9.99")
+    monkeypatch.setenv("PRECO_DEEPSEEK_OUTPUT", "8.88")
+    monkeypatch.setenv("PRECO_DEEPSEEK_CACHE", "0.111")
+
+    assert obter_precos_com_override()["deepseek"] == {"input": 9.99, "output": 8.88, "cache": 0.111}
+    assert PROVIDER_PRECOS["deepseek"]["input"] == 9.99
+    # A tabela tabelada em si não é mutada pelo override
+    assert TABELA_PRECOS_PADRAO["deepseek"] == {"input": 0.15, "output": 0.60, "cache": 0.003}
+

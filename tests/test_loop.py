@@ -418,3 +418,211 @@ def test_loop_fallback_posicional_emite_aviso_stderr(monkeypatch, capsys):
 
 
 
+
+
+# ============================================================================
+# Rodada E1: poda ligável, telemetria de prefixo, latência decomposta
+# ============================================================================
+
+def _resposta_tool(call_id: str) -> ProviderResponse:
+    return ProviderResponse(
+        text="",
+        tool_calls=[{"id": call_id, "name": "executar_comando", "args": {"comando": "dir"}}],
+        usage={"prompt": 10, "completion": 5, "total": 15, "cached": 0},
+        modelo="fake-model",
+    )
+
+
+def _resposta_final(texto: str = "Final") -> ProviderResponse:
+    return ProviderResponse(
+        text=texto,
+        tool_calls=[],
+        usage={"prompt": 10, "completion": 5, "total": 15, "cached": 0},
+        modelo="fake-model",
+    )
+
+
+def test_metricas_registram_esforco_e_teto_efetivos(monkeypatch):
+    provider = FakeProvider([_resposta_final()])
+    res = executar_loop(tarefa="t", provider=provider, max_turns=1)
+    assert res.metricas["reasoning_effort"] == "high"
+    assert res.metricas["max_tokens"] == 65536
+
+    # O override por ambiente vale também para o valor registrado na métrica
+    monkeypatch.setenv("HARNESS_REASONING_EFFORT", "max")
+    monkeypatch.setenv("HARNESS_MAX_TOKENS", "128000")
+    provider_override = FakeProvider([_resposta_final()])
+    res_override = executar_loop(tarefa="t", provider=provider_override, max_turns=1)
+    assert res_override.metricas["reasoning_effort"] == "max"
+    assert res_override.metricas["max_tokens"] == 128000
+
+
+def test_poda_ligavel_muda_o_historico_enviado(monkeypatch):
+    import harness.loop as loop_mod
+
+    def fake_tool(comando: str):
+        return {"stdout": "x" * 400, "stderr": "", "codigo_saida": 0}
+
+    monkeypatch.setitem(loop_mod.TOOL_REGISTRY, "executar_comando", fake_tool)
+
+    def fabricar_provider():
+        # 7 turnos de tool + 1 final = 8 turnos, com blocos de ação acima do max_turnos_manter
+        return FakeProvider([_resposta_tool(f"c{i}") for i in range(7)] + [_resposta_final()])
+
+    provider_com_poda = fabricar_provider()
+    provider_sem_poda = fabricar_provider()
+
+    res_com_poda = executar_loop(
+        tarefa="tarefa longa", provider=provider_com_poda, max_turns=8,
+        cache_habilitado=True, poda_habilitada=True, teto_contexto_tokens=120,
+    )
+    res_sem_poda = executar_loop(
+        tarefa="tarefa longa", provider=provider_sem_poda, max_turns=8,
+        cache_habilitado=True, poda_habilitada=False, teto_contexto_tokens=120,
+    )
+
+    enviados_com_poda = [len(m) for m in provider_com_poda.chamadas]
+    enviados_sem_poda = [len(m) for m in provider_sem_poda.chamadas]
+
+    # Sem poda o histórico só cresce; com poda o último envio é menor que o sem poda
+    assert enviados_sem_poda == sorted(enviados_sem_poda)
+    assert enviados_com_poda[-1] < enviados_sem_poda[-1]
+
+    assert res_com_poda.metricas["poda_habilitada"] is True
+    assert res_sem_poda.metricas["poda_habilitada"] is False
+    # O teto observado é registrado nas duas condições e é maior sem poda
+    assert res_sem_poda.metricas["teto_contexto_observado"] > res_com_poda.metricas["teto_contexto_observado"]
+    assert res_com_poda.metricas["teto_contexto_tokens"] == 120
+
+
+def test_telemetria_de_prefixo_por_turno_on_e_off():
+    import time as _time
+
+    class ProviderLento(FakeProvider):
+        """Sleep garante timestamps distintos no marcador de cache OFF (prefix-breaker)."""
+
+        def gerar(self, mensagens, system_prompt):
+            _time.sleep(0.003)
+            return super().gerar(mensagens, system_prompt)
+
+    provider_on = ProviderLento([_resposta_tool("c1"), _resposta_final()])
+    res_on = executar_loop(
+        tarefa="t", provider=provider_on, max_turns=2,
+        contexto_projeto="CONTEXTO ESTAVEL", cache_habilitado=True,
+    )
+    telemetria_on = res_on.metricas["telemetria_prefixo"]
+    assert len(telemetria_on) == 2
+    assert [t["prefixo_estavel"] for t in telemetria_on] == [True, True]
+    assert telemetria_on[0]["sha256_head"] == telemetria_on[1]["sha256_head"]
+    assert res_on.metricas["turnos_prefixo_estavel"] == 2
+    assert res_on.metricas["turnos_totais"] == 2
+    assert res_on.metricas["prefixo_estavel_pct"] == 100.0
+
+    provider_off = ProviderLento([_resposta_tool("c2"), _resposta_final()])
+    res_off = executar_loop(
+        tarefa="t", provider=provider_off, max_turns=2,
+        contexto_projeto="CONTEXTO ESTAVEL", cache_habilitado=False,
+    )
+    telemetria_off = res_off.metricas["telemetria_prefixo"]
+    assert len(telemetria_off) == 2
+    assert [t["prefixo_estavel"] for t in telemetria_off] == [False, False]
+    assert telemetria_off[0]["sha256_head"] != telemetria_off[1]["sha256_head"]
+    assert res_off.metricas["turnos_prefixo_estavel"] == 0
+    assert res_off.metricas["prefixo_estavel_pct"] == 0.0
+
+
+def test_latencia_decomposta_em_modelo_e_ferramenta(monkeypatch):
+    import time as _time
+    import harness.loop as loop_mod
+
+    def fake_tool(comando: str):
+        _time.sleep(0.01)
+        return {"stdout": "ok", "stderr": "", "codigo_saida": 0}
+
+    monkeypatch.setitem(loop_mod.TOOL_REGISTRY, "executar_comando", fake_tool)
+
+    class ProviderLento(FakeProvider):
+        def gerar(self, mensagens, system_prompt):
+            _time.sleep(0.01)
+            return super().gerar(mensagens, system_prompt)
+
+    provider = ProviderLento([_resposta_tool("c1"), _resposta_final()])
+    res = executar_loop(tarefa="t", provider=provider, max_turns=2)
+
+    m = res.metricas
+    assert m["latencia_modelo_s"] >= 0.01
+    assert m["latencia_tools_s"] >= 0.01
+    # Os dois acumuladores são não-negativos e a soma não excede a latência total do loop
+    assert m["latencia_total_s"] >= m["latencia_modelo_s"] + m["latencia_tools_s"]
+
+
+# ============================================================================
+# Item 10: impressão hostil, codificação e reparação de texto
+# ============================================================================
+
+def test_falha_de_impressao_nao_derruba_a_execucao(monkeypatch):
+    """
+    Medido no piloto: a resposta do modelo com emoji/seta levantava UnicodeEncodeError no
+    print e matava o processo DEPOIS de a chamada ter sido paga. A execução tem que terminar
+    e as métricas têm que estar gravadas.
+    """
+    import sys
+
+    texto_com_simbolos = "Resultado \u2705 \u2192 \u2260 pronto"
+
+    class FluxoCp1252:
+        """Console hostil: recusa qualquer caractere fora de cp1252, como o redirecionamento no Windows."""
+
+        encoding = "cp1252"
+
+        def __init__(self):
+            self.escritas = 0
+
+        def write(self, texto):
+            self.escritas += 1
+            texto.encode("cp1252")  # levanta UnicodeEncodeError nos símbolos
+            return len(texto)
+
+        def flush(self):
+            pass
+
+    fluxo = FluxoCp1252()
+    monkeypatch.setattr(sys, "stdout", fluxo)
+
+    # O fluxo é hostil de verdade: escrever os símbolos nele levanta
+    with pytest.raises(UnicodeEncodeError):
+        fluxo.write(texto_com_simbolos)
+
+    provider = FakeProvider([
+        ProviderResponse(
+            text=texto_com_simbolos,
+            tool_calls=[],
+            usage={"prompt": 40, "completion": 7, "total": 47, "cached": 0},
+            modelo="fake-model",
+        )
+    ])
+    resultado = executar_loop(tarefa="t", provider=provider, max_turns=1)
+
+    # A execução terminou e o dado pago está registrado
+    assert resultado.metricas["turnos_usados"] == 1
+    assert resultado.metricas["prompt_tokens"] == 40
+    assert resultado.metricas["completion_tokens"] == 7
+    assert resultado.metricas["custo_real"] > 0
+    # O texto íntegro fica no histórico (só a impressão degradou)
+    assert resultado.historico[-1]["text"] == texto_com_simbolos
+    assert fluxo.escritas > 0
+
+
+def test_garantir_saida_utf8_e_idempotente_e_marca_pythonutf8(monkeypatch):
+    import os
+    import sys
+    from harness.loop import _FluxoSeguro, garantir_saida_utf8
+
+    monkeypatch.delenv("PYTHONUTF8", raising=False)
+    garantir_saida_utf8()
+    assert os.environ["PYTHONUTF8"] == "1"
+
+    primeira_envoltura = sys.stdout
+    garantir_saida_utf8()
+    assert sys.stdout is primeira_envoltura  # não envolve duas vezes
+    assert isinstance(sys.stdout, _FluxoSeguro)

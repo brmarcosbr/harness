@@ -618,3 +618,39 @@ def test_cli_bench_avisos_argumentos_ignorados(monkeypatch, capsys):
     assert "[AVISO] --no-cache ignorado no modo --bench" in stderr_captured
 
 
+
+
+def test_gerar_contexto_repo_exclui_arquivos_de_agente(tmp_path):
+    """
+    Arquivos de instrução do agente mudam quando as regras do agente mudam: se entrassem no
+    head do benchmark, quebrariam a comparabilidade com as medições publicadas.
+    """
+    (tmp_path / "AGENTS.md").write_text("# regras\nSEGREDO_AGENTE\n", encoding="utf-8")
+    (tmp_path / "CLAUDE.md").write_text("# claude\nSEGREDO_CLAUDE\n", encoding="utf-8")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "AGENTS.md").write_text("SEGREDO_AGENTE_SUB\n", encoding="utf-8")
+    (sub / "CLAUDE.md").write_text("SEGREDO_CLAUDE_SUB\n", encoding="utf-8")
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir()
+    (claude_dir / "notes.md").write_text("SEGREDO_NOTAS_CLAUDE\n", encoding="utf-8")
+    (tmp_path / "comum.md").write_text("# comum\nconteudo comum\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("DEEPSEEK_API_KEY=SEGREDO_ENV\n", encoding="utf-8")
+
+    contexto = gerar_contexto_repo(tmp_path, limite_tokens=10000)
+
+    # O arquivo comum (e só ele) entra
+    assert "===== ARQUIVO: comum.md =====" in contexto
+    assert "conteudo comum" in contexto
+
+    # Arquivos de agente e diretório .claude ficam fora, na raiz e em subdiretórios
+    for proibido in ("AGENTS.md", "CLAUDE.md", "notes.md", "SEGREDO_AGENTE", "SEGREDO_CLAUDE",
+                     "SEGREDO_AGENTE_SUB", "SEGREDO_CLAUDE_SUB", "SEGREDO_NOTAS_CLAUDE"):
+        assert proibido not in contexto
+
+    # .env continua protegido, junto com o segredo dele
+    assert ".env" not in contexto
+    assert "SEGREDO_ENV" not in contexto
+
+    # E a exclusão do diretório está declarada na configuração
+    assert ".claude" in DIRS_IGNORADOS

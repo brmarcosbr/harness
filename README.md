@@ -5,7 +5,7 @@
 > Provider-agnostic multi-turn loop, safe tool use, and **74.6% to 76.2% cost savings via context caching** (real benchmark with Gemini).
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-140%2F140%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-167%2F167%20passing-brightgreen)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 ![Zero Libs](https://img.shields.io/badge/external--deps-zero-informational)
 ![CI](https://github.com/brmarcosbr/harness/actions/workflows/ci.yml/badge.svg)
@@ -208,7 +208,17 @@ These tests demonstrated that **no regular-expression-based blocklist is capable
 
 The automated benchmark (`python -m harness --bench`) runs 3 real software engineering tasks against the repository, comparing **Cache Enabled** mode (*invariant prefix*) versus **Cache Disabled** mode (*prefix intentionally broken on every turn*).
 
-Results measured on the `gemini-3.8-flash` model with the repository context (~26,000 tokens):
+The suite currently runs **three conditions with N repetitions each** (default 5, minimum 3):
+
+- **ON** — cache ON + history pruning ON (baseline).
+- **OFF** — cache OFF + history pruning ON (isolates the cache effect).
+- **SEM_PODA** — cache OFF + history pruning OFF. Declared explicitly, not inferred: the third condition isolates the effect of the *pruning policy*, and its comparison base is the OFF condition.
+
+Each execution is recorded individually and never aggregated before being written. Per task × condition the suite reports the median and range of cost, latency, turns and tokens, plus the success rate (n of N). Because the validator changed after the pilot was observed, the record stores both criteria — the current one and the strict historical one (test file containing the substring `assert`) — and the summary reports both success rates side by side, so the effect of the change is visible instead of chosen after the fact. Raw results are written to `bench_<date>_<provider>.json` under a header stating date, driver and version, effective model, `reasoning_effort`, `max_tokens`, tariff window (peak/off-peak), tariff used, account coverage, number of repetitions, replacement policy and repository commit.
+
+Failures are classified instead of lumped together. A **task failure** (there were turns, the validation did not pass) counts in the denominator as a normal failure. An **abort** (0 turns, or a connection/API error) means nothing was measured — it is instrument failure, not a model attempt: it is recorded with `tipo_falha`, excluded from the success-rate denominator, and replaced, up to 2 replacements per cell. If that ceiling is exceeded, the collection stops and reports why in the header.
+
+The table below is the published measurement (Gemini, 2 conditions, a single run each) and is kept as the historical record:
 
 | Task | Mode | Turns | Prompt Tokens | Cached Tokens | Cost (USD) | Savings | Success |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -276,6 +286,12 @@ Edit the `.env` with your credentials:
 GEMINI_API_KEY=sua_chave_gemini_aqui
 DEEPSEEK_API_KEY=sua_chave_deepseek_aqui
 HARNESS_PROVIDER=gemini
+
+# Optional: reasoning effort and output ceiling sent to the OpenAI-compatible endpoint.
+# Defaults: high and 65536. Accepted effort values: low, high, max (medium and xhigh
+# are aliases that resolve to high). Invalid values are ignored with a warning on stderr.
+# HARNESS_REASONING_EFFORT=high
+# HARNESS_MAX_TOKENS=65536
 ```
 
 ---
@@ -391,7 +407,7 @@ Modelo final: gemini-3.8-flash
 
 ## Running the Test Suite
 
-The 140 unit tests run 100% offline (they use mocks and fake providers, with no network dependency or API quota consumption):
+The 167 unit tests run 100% offline (they use mocks and fake providers, with no network dependency or API quota consumption):
 
 ```bash
 pytest tests/ -q
@@ -400,12 +416,16 @@ pytest tests/ -q
 Expected output:
 
 ```text
-............................................................................................................................................  [100%]
-140 passed in 2.75s
+.......................................................................................................................................................................  [100%]
+167 passed in 4.67s
 ```
 
 The tests cover:
 - Price calculation and accuracy (Gemini and DeepSeek with cache windows, verification date, and `PRECO_*` environment overrides).
+- Reasoning effort and output ceiling declared in the request body (`HARNESS_REASONING_EFFORT` / `HARNESS_MAX_TOKENS` overrides) instead of depending on server defaults.
+- Benchmark collection rigor: three conditions (cache ON, cache OFF and no pruning), N repetitions with median and range per task × condition, peak/off-peak tariff window as a pure function, and agent instruction files (`AGENTS.md`, `CLAUDE.md`, `.claude/`) kept out of the repository context head.
+- Per-turn prefix telemetry (head hash and stability flag) and latency decomposed into model and tool time.
+- Collection robustness: printing that cannot kill a paid run (UTF-8 reconfiguration plus a stream that degrades instead of raising), abort versus task failure classification with the success rate computed only over non-aborted executions, a replacement policy capped per cell, and results written explicitly as UTF-8 (`ensure_ascii=False`), so the artifact does not depend on the machine's local encoding.
 - Tool security resolution and validation (shell-less whitelist, strict verb blocklist, timeouts, path traversal).
 - Auditable guarantee that metacharacters are literals (`dir & rm -rf /`, `type a.txt > b.txt` without overwriting).
 - Strict validation of git, python, findstr, and where arguments, and protection against symlink/junction traversal on all surfaces.

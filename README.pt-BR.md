@@ -5,7 +5,7 @@
 > Loop multi-turno agnóstico de provider, tool use segura e **74,6% a 76,2% de economia de custo via context caching** (benchmark real com Gemini).
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-140%2F140%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-167%2F167%20passing-brightgreen)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 ![Zero Libs](https://img.shields.io/badge/external--deps-zero-informational)
 ![CI](https://github.com/brmarcosbr/harness/actions/workflows/ci.yml/badge.svg)
@@ -208,6 +208,18 @@ Esses testes demonstraram que **nenhuma blocklist baseada em expressões regular
 
 O benchmark automatizado (`python -m harness --bench`) executa 3 tarefas reais de engenharia de software contra o repositório, comparando o modo com **Cache Habilitado** (*prefixo invariante*) versus **Cache Desabilitado** (*prefixo quebrado intencionalmente a cada turno*).
 
+A suíte hoje roda **três condições com N repetições cada** (padrão 5, mínimo 3):
+
+- **ON** — cache ON + poda de histórico ON (linha de base).
+- **OFF** — cache OFF + poda ON (isola o efeito do cache).
+- **SEM_PODA** — cache OFF + poda OFF. Declarado explicitamente, não inferido: a terceira condição isola o efeito da *política de poda*, e a base de comparação dela é a condição OFF.
+
+Cada execução é registrada individualmente e nunca agregada antes de gravar. Por célula tarefa × condição a suíte reporta mediana e amplitude de custo, latência, turnos e tokens, mais a taxa de sucesso (n de N). Como o validador mudou depois de observar o piloto, o registro guarda os dois critérios — o atual e o estrito histórico (arquivo de teste contendo a substring `assert`) — e o resumo reporta as duas taxas lado a lado, para que o efeito da mudança fique visível em vez de escolhido depois. Os resultados crus são gravados em `bench_<data>_<provider>.json` sob um cabeçalho com data, driver e versão, modelo efetivo, `reasoning_effort`, `max_tokens`, janela tarifária (pico/off-peak), tarifa usada, cobertura da conta, número de repetições, política de reposição e commit do repositório.
+
+As falhas são classificadas em vez de somadas. **Falha de tarefa** (houve turnos e a validação não passou) entra no denominador como fracasso normal. **Aborto** (0 turnos ou erro de conexão/API) significa que nada foi medido: é falha de instrumento, não tentativa do modelo — é registrado com `tipo_falha`, fica fora do denominador da taxa de sucesso e é reposto, até o teto de 2 reposições por célula. Estourando o teto, a coleta para e registra o motivo no cabeçalho.
+
+A tabela abaixo é a medição publicada (Gemini, 2 condições, uma execução cada) e fica mantida como registro histórico:
+
 Resultados medidos no modelo `gemini-3.8-flash` com o contexto do repositório (~26.000 tokens):
 
 | Tarefa | Modo | Turnos | Prompt Tokens | Cached Tokens | Custo (USD) | Economia | Sucesso |
@@ -276,6 +288,12 @@ Edite o `.env` com suas credenciais:
 GEMINI_API_KEY=sua_chave_gemini_aqui
 DEEPSEEK_API_KEY=sua_chave_deepseek_aqui
 HARNESS_PROVIDER=gemini
+
+# Opcionais: esforço de raciocínio e teto de saída enviados ao endpoint compatível com OpenAI.
+# Padrões: high e 65536. Valores de esforço aceitos: low, high, max (medium e xhigh são
+# aliases que resolvem para high). Valor inválido é ignorado com aviso em stderr.
+# HARNESS_REASONING_EFFORT=high
+# HARNESS_MAX_TOKENS=65536
 ```
 
 ---
@@ -391,7 +409,7 @@ Modelo final: gemini-3.8-flash
 
 ## Executando a Suíte de Testes
 
-Os 140 testes unitários são executados 100% offline (utilizam mocks e providers fakes, sem dependência de rede ou consumo de cotas de API):
+Os 167 testes unitários são executados 100% offline (utilizam mocks e providers fakes, sem dependência de rede ou consumo de cotas de API):
 
 ```bash
 pytest tests/ -q
@@ -400,12 +418,16 @@ pytest tests/ -q
 Saída esperada:
 
 ```text
-............................................................................................................................................  [100%]
-140 passed in 2.75s
+.......................................................................................................................................................................  [100%]
+167 passed in 4.67s
 ```
 
 Os testes cobrem:
 - Cálculo e precisão de preços (Gemini e DeepSeek com janelas de cache, data de conferência e overrides por ambiente `PRECO_*`).
+- Esforço de raciocínio e teto de saída declarados no corpo da requisição (overrides `HARNESS_REASONING_EFFORT` / `HARNESS_MAX_TOKENS`) em vez de depender de default do servidor.
+- Rigor da coleta do benchmark: três condições (cache ON, cache OFF e sem poda), N repetições com mediana e amplitude por célula tarefa × condição, janela tarifária pico/off-peak como função pura e arquivos de instrução do agente (`AGENTS.md`, `CLAUDE.md`, `.claude/`) fora do head de contexto do repositório.
+- Telemetria de prefixo por turno (hash do head e booleano de estabilidade) e latência decomposta em tempo de modelo e de ferramenta.
+- Robustez da coleta: impressão que não derruba execução já paga (reconfiguração UTF-8 mais fluxo que degrada em vez de levantar), classificação de aborto versus falha de tarefa com taxa de sucesso só sobre as não abortadas, política de reposição com teto por célula, e resultados gravados explicitamente em UTF-8 (`ensure_ascii=False`), sem depender da codificação local da máquina.
 - Resolução e validação de segurança de ferramentas (whitelist sem shell, blocklist estrita em verbos, timeouts, path traversal).
 - Garantia auditável de metacaracteres como literais (`dir & rm -rf /`, `type a.txt > b.txt` sem sobrescrita).
 - Validação estrita de argumentos git, python, findstr, where e proteção contra symlink/junction traversal em todas as superfícies.

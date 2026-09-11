@@ -1,21 +1,24 @@
 import os
 import sys
-from datetime import date
-from typing import Any, Dict, Optional
+from datetime import date, datetime, timezone
+from typing import Any, Dict, Optional, Tuple
 
 # Data da última conferência oficial dos preços tabelados (formato ISO YYYY-MM-DD)
-PRECOS_CONFERIDOS_EM: str = "2026-09-01"
+PRECOS_CONFERIDOS_EM: str = "2026-09-11"
 LIMITE_DIAS_AVISO_PRECOS: int = 180  # 6 meses (~180 dias)
 
 # Preços oficiais por 1 milhão de tokens (USD)
 # Gemini: https://ai.google.dev/pricing (Paid tier Standard, conferido em set/2026)
-# DeepSeek: https://api-docs.deepseek.com/quick_start/pricing (conferido em set/2026, modelo deepseek-v4-flash)
-# Tabela oficial DeepSeek (deepseek-v4-flash):
-#   - Off-peak (seg-sex 16:30-08:30 UTC, sáb-dom all day):
-#       input (cache miss): $0.22 / 1M | output: $0.66 / 1M | cache (hit): $0.007 / 1M
-#   - Peak (seg-sex 01:00-04:00 e 06:00-10:00 UTC):
-#       preço = 2x o valor off-peak (input: $0.44 / output: $1.32 / cache: $0.014 / 1M)
+# DeepSeek: https://api-docs.deepseek.com/quick_start/pricing (conferido em 2026-09-11,
+#           modelo `deepseek-flash` — DeepSeek-V4.1-Flash)
+# Tabela oficial DeepSeek (`deepseek-flash`):
+#   - Off-peak = COMPLEMENTO da janela de pico (todo o resto é off-peak):
+#       input (cache miss): $0.15 / 1M | output: $0.60 / 1M | cache (hit): $0.003 / 1M
+#   - Pico (seg-sex 01:00-04:00 e 06:00-10:00 UTC) = 2x o off-peak:
+#       input: $0.30 / 1M | output: $1.20 / 1M | cache (hit): $0.006 / 1M
 # NOTA: O custo calculado pelo harness é uma estimativa baseada nos valores OFF-PEAK.
+# O nome `deepseek-v4-flash` continua aceito pela API como alias aposentado, mas já não é
+# o modelo servido: a partir desta rodada o default é `deepseek-flash`.
 TABELA_PRECOS_PADRAO: Dict[str, Dict[str, float]] = {
     "gemini": {
         # Preços gemini-3.8-flash: promoção até 31/12/2026; dobra a partir de 01/01/2027
@@ -25,9 +28,9 @@ TABELA_PRECOS_PADRAO: Dict[str, Dict[str, float]] = {
         "cache": 0.075,
     },
     "deepseek": {
-        "input": 0.22,
-        "output": 0.66,
-        "cache": 0.007,
+        "input": 0.15,
+        "output": 0.60,
+        "cache": 0.003,
     },
     "openai": {
         # Referência padrão OpenAI gpt-4o-mini
@@ -36,6 +39,27 @@ TABELA_PRECOS_PADRAO: Dict[str, Dict[str, float]] = {
         "cache": 0.075,
     }
 }
+
+# Janela de pico tarifário (UTC): segunda a sexta, 01:00-04:00 e 06:00-10:00.
+# A janela off-peak é o COMPLEMENTO desta: qualquer outro horário (inclusive sábado
+# e domingo inteiros) paga tarifa off-peak.
+HORARIOS_PICO_UTC: Tuple[Tuple[int, int], ...] = ((1, 4), (6, 10))
+DIAS_SEMANA_PICO: Tuple[int, ...] = (0, 1, 2, 3, 4)  # 0 = segunda-feira (datetime.weekday)
+
+
+def janela_tarifaria(momento: datetime) -> str:
+    """
+    Função pura que classifica um instante como 'pico' ou 'off-peak' segundo a regra
+    oficial da DeepSeek: pico = segunda a sexta, 01:00-04:00 e 06:00-10:00 UTC.
+    Qualquer outro instante é 'off-peak'. Um datetime sem tzinfo é interpretado como UTC.
+    """
+    if momento.tzinfo is not None:
+        momento = momento.astimezone(timezone.utc)
+    if momento.weekday() in DIAS_SEMANA_PICO:
+        for inicio, fim in HORARIOS_PICO_UTC:
+            if inicio <= momento.hour < fim:
+                return "pico"
+    return "off-peak"
 
 
 def obter_precos_com_override() -> Dict[str, Dict[str, float]]:
@@ -119,7 +143,7 @@ PROVIDER_PRECOS: Dict[str, Dict[str, float]] = _ProviderPrecosDict()
 # Modelos padrão para cada provider
 DEFAULT_MODELS = {
     "gemini": "gemini-3.8-flash",
-    "deepseek": "deepseek-v4-flash",
+    "deepseek": "deepseek-flash",
     "openai": "gpt-4o-mini",
 }
 
@@ -147,8 +171,64 @@ COMMAND_TIMEOUT_SECONDS = 30
 TETO_CONTEXTO_TOKENS = 100_000
 MAX_TURNOS_MANTER_PODA = 4
 
+# Esforço de raciocínio e teto de saída enviados ao endpoint OpenAI-compatível.
+# Os dois são fixados para que custo e comprimento das respostas não dependam de default
+# do servidor (que já mudou uma vez). Valores aceitos pela API: low, high e max ('medium'
+# e 'xhigh' são aliases que a API resolve para high). Fixar em 'high' não muda o
+# comportamento observado, apenas torna a escolha declarada e auditável. O teto de 65536 é
+# o default do servidor em modo thinking; fixá-lo importa porque, com esforço 'max', o
+# default do servidor passa a 128K — o teto andaria sozinho junto com o esforço.
+REASONING_EFFORT_PADRAO: str = "high"
+MAX_TOKENS_PADRAO: int = 65536
+REASONING_EFFORT_VALIDOS: Tuple[str, ...] = ("low", "high", "max", "medium", "xhigh")
+
+
+def obter_reasoning_effort() -> str:
+    """
+    Esforço de raciocínio efetivo enviado ao endpoint. Aceita override por
+    HARNESS_REASONING_EFFORT (mesmo padrão dos PRECO_*); valor inválido é ignorado
+    com aviso em stderr e o padrão vale.
+    """
+    valor = (os.environ.get("HARNESS_REASONING_EFFORT") or "").strip().lower()
+    if not valor:
+        return REASONING_EFFORT_PADRAO
+    if valor not in REASONING_EFFORT_VALIDOS:
+        sys.stderr.write(
+            f"[AVISO] HARNESS_REASONING_EFFORT={valor!r} ignorado: valores aceitos são "
+            f"{', '.join(REASONING_EFFORT_VALIDOS)}. Usando {REASONING_EFFORT_PADRAO!r}.\n"
+        )
+        return REASONING_EFFORT_PADRAO
+    return valor
+
+
+def obter_max_tokens() -> int:
+    """
+    Teto de tokens de saída efetivo. Override por HARNESS_MAX_TOKENS (inteiro > 0);
+    valor inválido é ignorado com aviso em stderr e o padrão vale.
+    """
+    bruto = (os.environ.get("HARNESS_MAX_TOKENS") or "").strip()
+    if not bruto:
+        return MAX_TOKENS_PADRAO
+    try:
+        valor = int(bruto)
+    except ValueError:
+        valor = 0
+    if valor <= 0:
+        sys.stderr.write(
+            f"[AVISO] HARNESS_MAX_TOKENS={bruto!r} ignorado: esperado inteiro > 0. "
+            f"Usando {MAX_TOKENS_PADRAO}.\n"
+        )
+        return MAX_TOKENS_PADRAO
+    return valor
+
+
 # Diretórios ignorados na busca e na geração de contexto do repositório
-DIRS_IGNORADOS = {".venv", "__pycache__", ".git", ".pytest_cache", "build", "dist"}
+DIRS_IGNORADOS = {".venv", "__pycache__", ".git", ".pytest_cache", "build", "dist", ".claude"}
+
+# Arquivos de instrução do agente ignorados na geração de contexto do repositório.
+# Eles mudam quando as regras do agente mudam: se entrassem no head do benchmark, a
+# comparabilidade com as medições publicadas e a reprodutibilidade da rodada quebrariam.
+ARQUIVOS_AGENTE_IGNORADOS = {"AGENTS.md", "CLAUDE.md"}
 
 # Caminhos protegidos contra leitura e/ou escrita pelas ferramentas
 CAMINHOS_PROTEGIDOS = {
