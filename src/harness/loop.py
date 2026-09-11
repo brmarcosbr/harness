@@ -442,9 +442,22 @@ def executar_loop(
     latencia_total = time.monotonic() - instante_inicio_loop
     effort_efetivo = getattr(provider, "reasoning_effort", None)
     max_tokens_efetivo = getattr(provider, "max_tokens", None)
+    # Parâmetros próprios do caminho Gemini, em campos próprios: `reasoning_effort` não existe
+    # na API dele, e reaproveitar o nome seria registrar origem falsa.
+    parametros_proprios: Dict[str, Any] = {}
+    leitor_parametros = getattr(provider, "parametros_de_geracao_efetivos", None)
+    if callable(leitor_parametros):
+        parametros_proprios = dict(leitor_parametros())
+    thinking_level_efetivo = parametros_proprios.get("thinking_level")
+    max_output_tokens_efetivo = parametros_proprios.get("max_output_tokens")
+    thinking_recusado = parametros_proprios.get("thinking_recusado")
     prefixo_pct = (turnos_prefixo_estavel / turnos_usados * 100.0) if turnos_usados else 0.0
 
     print(f"Esforco de raciocinio: {effort_efetivo} | Teto de saida: {max_tokens_efetivo} tokens")
+    if thinking_level_efetivo is not None or max_output_tokens_efetivo is not None:
+        print(f"Thinking (campo proprio do provider): level={thinking_level_efetivo} | maxOutputTokens={max_output_tokens_efetivo}")
+    if thinking_recusado:
+        print(f"[AVISO] bloco de thinking recusado pela API nesta execucao: {thinking_recusado}")
     print(f"Poda de historico: {'ON' if poda_habilitada else 'OFF'} | teto observado: {teto_contexto_observado} tokens estimados")
     print(f"Latencia: total {latencia_total:.2f}s | modelo {tempo_modelo_total:.2f}s | ferramentas {tempo_ferramentas_total:.2f}s")
     print(f"Prefixos estaveis: {turnos_prefixo_estavel}/{turnos_usados} turnos ({prefixo_pct:.1f}%)")
@@ -470,6 +483,9 @@ def executar_loop(
         "latencia_total_s": latencia_total,
         "reasoning_effort": effort_efetivo,
         "max_tokens": max_tokens_efetivo,
+        "thinking_level": thinking_level_efetivo,
+        "max_output_tokens": max_output_tokens_efetivo,
+        "thinking_recusado": thinking_recusado,
         "turnos_prefixo_estavel": turnos_prefixo_estavel,
         "turnos_totais": turnos_usados,
         "prefixo_estavel_pct": prefixo_pct,

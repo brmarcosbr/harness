@@ -3,6 +3,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 import json
+import sys
 import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional
@@ -11,6 +12,8 @@ from harness.config import (
     DEFAULT_FALLBACKS,
     DEFAULT_MODELS,
     PROVIDER_PRECOS,
+    obter_gemini_max_output_tokens,
+    obter_gemini_thinking_level,
     obter_max_tokens,
     obter_reasoning_effort,
 )
@@ -70,6 +73,16 @@ class Provider(ABC):
 # ============================================================================
 # Funções puras de conversão e normalização — GEMINI
 # ============================================================================
+
+def _erro_menciona_thinking(msg: str) -> bool:
+    """
+    Função pura que reconhece, na mensagem de erro da API, uma recusa do bloco de raciocínio.
+    Só nesse caso vale refazer a chamada sem o campo: um 400 por outro motivo não deve virar
+    uma segunda requisição.
+    """
+    texto = (msg or "").lower()
+    return "thinking" in texto
+
 
 def modelos_a_tentar(modelo_inicial: str, fallbacks: Optional[List[str]] = None) -> List[str]:
     """
@@ -397,17 +410,58 @@ class GeminiProvider(Provider):
         self.base_url = (base_url or DEFAULT_BASE_URLS["gemini"]).rstrip("/")
         self.fallbacks = fallbacks if fallbacks is not None else DEFAULT_FALLBACKS["gemini"]
         self.precos = PROVIDER_PRECOS["gemini"]
+        # Preenchidos a cada chamada: o que foi efetivamente enviado (None onde a API recusou)
+        self.ultima_geracao: Optional[Dict[str, Any]] = None
+        self.motivo_thinking_recusado: Optional[str] = None
 
     @property
     def reasoning_effort(self) -> Optional[str]:
-        # A API REST do Gemini não aceita `reasoning_effort` no corpo: enviá-lo resultaria em
-        # HTTP 400. O controle equivalente (thinkingConfig/generationConfig) tem outro formato
-        # e fica fora do escopo desta rodada, então aqui o campo não é enviado nem registrado.
+        # `reasoning_effort` é campo da API OpenAI-compatível e não existe na API do Gemini:
+        # continua None para não fingir origem. O controle equivalente daqui é thinking_level.
         return None
 
     @property
     def max_tokens(self) -> Optional[int]:
+        # Idem: o teto do Gemini se chama maxOutputTokens (ver max_output_tokens abaixo).
         return None
+
+    @property
+    def max_output_tokens(self) -> int:
+        """Teto de tokens de saída declarado no corpo (generationConfig.maxOutputTokens)."""
+        return obter_gemini_max_output_tokens()
+
+    @property
+    def thinking_level(self) -> str:
+        """
+        Nível de raciocínio declarado no corpo (generationConfig.thinkingConfig.thinkingLevel).
+        Não é `thinkingBudget`: ver a justificativa e as fontes em config.py.
+        """
+        return obter_gemini_thinking_level()
+
+    def montar_generation_config(self) -> Dict[str, Any]:
+        """
+        Monta o generationConfig enviado ao endpoint. Os dois campos vão SEMPRE declarados:
+        deixar qualquer um deles de fora é aceitar em silêncio o default do servidor, que é
+        exatamente o que esta rodada existe para eliminar.
+        """
+        return {
+            "maxOutputTokens": self.max_output_tokens,
+            "thinkingConfig": {"thinkingLevel": self.thinking_level},
+        }
+
+    def parametros_de_geracao_efetivos(self) -> Dict[str, Any]:
+        """
+        O que de fato foi enviado: o valor declarado, ou None quando a API recusou o campo e a
+        chamada foi refeita sem ele. Nunca devolve o declarado no lugar do efetivo — registrar
+        um valor que o servidor não aplicou seria origem falsa.
+        """
+        if self.ultima_geracao is None:
+            return {
+                "max_output_tokens": self.max_output_tokens,
+                "thinking_level": self.thinking_level,
+                "thinking_recusado": None,
+            }
+        return dict(self.ultima_geracao)
 
     def tools_schema(self) -> List[Dict[str, Any]]:
         return gemini_tool_schema()
@@ -417,54 +471,90 @@ class GeminiProvider(Provider):
         contents = mensagens_para_gemini_contents(mensagens)
         ultimo_erro = None
 
+        # Variantes do generationConfig: a completa e, se a API recusar o bloco de pensamento,
+        # a mesma sem ele. A recusa é avisada em stderr e registrada em parametros_de_geracao_efetivos.
+        config_declarado = self.montar_generation_config()
+        variantes = [config_declarado]
+        if "thinkingConfig" in config_declarado:
+            variantes.append({k: v for k, v in config_declarado.items() if k != "thinkingConfig"})
+
         for mod in modelos:
             endpoint = montar_endpoint_gemini(self.base_url, mod)
-            payload = {
-                "system_instruction": {
-                    "parts": [{"text": system_prompt}]
-                },
-                "contents": contents,
-                "tools": self.tools_schema()
-            }
+            proximo_modelo = False
 
-            headers = {"Content-Type": "application/json"}
-            if self.api_key:
-                headers["x-goog-api-key"] = self.api_key
+            for indice, generation_config in enumerate(variantes):
+                payload = {
+                    "system_instruction": {
+                        "parts": [{"text": system_prompt}]
+                    },
+                    "contents": contents,
+                    "tools": self.tools_schema(),
+                    "generationConfig": generation_config,
+                }
 
-            req_body = json.dumps(payload).encode("utf-8")
-            req = urllib.request.Request(
-                endpoint,
-                data=req_body,
-                headers=headers,
-                method="POST"
-            )
+                headers = {"Content-Type": "application/json"}
+                if self.api_key:
+                    headers["x-goog-api-key"] = self.api_key
 
-            try:
-                with urllib.request.urlopen(req, timeout=60) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    self.modelo_ativo = mod
-                    return normalizar_resposta_gemini(data, mod)
+                req_body = json.dumps(payload).encode("utf-8")
+                req = urllib.request.Request(
+                    endpoint,
+                    data=req_body,
+                    headers=headers,
+                    method="POST"
+                )
 
-            except urllib.error.HTTPError as e:
-                raw_err = e.read().decode("utf-8", errors="replace")
-                msg = raw_err
                 try:
-                    parsed = json.loads(raw_err)
-                    msg = parsed.get("error", {}).get("message", raw_err)
-                except Exception:
-                    pass
+                    with urllib.request.urlopen(req, timeout=60) as resp:
+                        data = json.loads(resp.read().decode("utf-8"))
+                        self.modelo_ativo = mod
+                        self.ultima_geracao = {
+                            "max_output_tokens": generation_config.get("maxOutputTokens"),
+                            "thinking_level": (generation_config.get("thinkingConfig") or {}).get("thinkingLevel"),
+                            "thinking_recusado": self.motivo_thinking_recusado,
+                        }
+                        return normalizar_resposta_gemini(data, mod)
 
-                if e.code == 404 or "not found" in msg.lower():
-                    print(f"[Aviso] Modelo '{mod}' não encontrado na API. Tentando fallback...")
-                    ultimo_erro = f"HTTP {e.code}: {msg}"
-                    continue
+                except urllib.error.HTTPError as e:
+                    raw_err = e.read().decode("utf-8", errors="replace")
+                    msg = raw_err
+                    try:
+                        parsed = json.loads(raw_err)
+                        msg = parsed.get("error", {}).get("message", raw_err)
+                    except Exception:
+                        pass
 
-                raise HarnessError(f"Erro na API Gemini (HTTP {e.code}): {msg}") from e
+                    if e.code == 404 or "not found" in msg.lower():
+                        print(f"[Aviso] Modelo '{mod}' não encontrado na API. Tentando fallback...")
+                        ultimo_erro = f"HTTP {e.code}: {msg}"
+                        proximo_modelo = True
+                        break
 
-            except urllib.error.URLError as e:
-                raise HarnessError(f"Erro de conexão com a API Gemini: {e.reason}") from e
-            except Exception as e:
-                raise HarnessError(f"Erro inesperado na chamada ao Gemini: {e}") from e
+                    # A API recusou o bloco de pensamento: refaz UMA vez sem ele, declarando o
+                    # motivo. O que não pode acontecer é o default do servidor passar em silêncio.
+                    if e.code == 400 and indice + 1 < len(variantes) and _erro_menciona_thinking(msg):
+                        self.motivo_thinking_recusado = msg
+                        self.ultima_geracao = {
+                            "max_output_tokens": generation_config.get("maxOutputTokens"),
+                            "thinking_level": None,
+                            "thinking_recusado": msg,
+                        }
+                        sys.stderr.write(
+                            f"[AVISO] API Gemini recusou generationConfig.thinkingConfig em '{mod}' "
+                            f"(HTTP {e.code}: {msg}). Refazendo a chamada SEM o campo: o nivel de "
+                            f"raciocinio NAO ficou declarado nesta execucao.\n"
+                        )
+                        continue
+
+                    raise HarnessError(f"Erro na API Gemini (HTTP {e.code}): {msg}") from e
+
+                except urllib.error.URLError as e:
+                    raise HarnessError(f"Erro de conexão com a API Gemini: {e.reason}") from e
+                except Exception as e:
+                    raise HarnessError(f"Erro inesperado na chamada ao Gemini: {e}") from e
+
+            if proximo_modelo:
+                continue
 
         raise HarnessError(
             f"Todos os modelos da cadeia de fallback falharam ({modelos}). Último erro: {ultimo_erro}"

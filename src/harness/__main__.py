@@ -84,6 +84,12 @@ def criar_parser() -> argparse.ArgumentParser:
         help="Cobertura da conta de API declarada no cabeçalho do resultado ('credito', 'pago' ou 'nao_declarada')."
     )
     parser.add_argument(
+        "--condicoes",
+        type=str,
+        default=None,
+        help="Condições a medir no benchmark, separadas por vírgula (ON, OFF, SEM_PODA). Padrão: todas as três."
+    )
+    parser.add_argument(
         "--max-turns",
         type=int,
         default=MAX_TURNS,
@@ -183,6 +189,7 @@ def main():
                 max_turns=args.max_turns,
                 repeticoes=args.repeticoes,
                 cobertura=args.cobertura,
+                condicoes=args.condicoes.split(",") if args.condicoes else None,
             )
             imprimir_tabela(resultados)
             imprimir_resumo_celulas(agregar_por_celula(resultados))
@@ -201,6 +208,10 @@ def main():
                 contexto_projeto=contexto_conteudo,
                 cache_habilitado=cache_habilitado,
             )
+    except ValueError as e:
+        # Erro de argumento (ex.: --condicoes com nome inválido): mensagem limpa, sem stack trace
+        print(f"ERRO: {e}", file=sys.stderr)
+        sys.exit(1)
     except HarnessError as e:
         print(f"ERRO: {e}", file=sys.stderr)
         sys.exit(1)

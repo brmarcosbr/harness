@@ -626,3 +626,21 @@ def test_garantir_saida_utf8_e_idempotente_e_marca_pythonutf8(monkeypatch):
     garantir_saida_utf8()
     assert sys.stdout is primeira_envoltura  # não envolve duas vezes
     assert isinstance(sys.stdout, _FluxoSeguro)
+
+
+def test_loop_registra_parametros_proprios_do_provider():
+    """O provider que declara parâmetros próprios (Gemini) os vê registrados na telemetria."""
+    class ProviderComParametros(FakeProvider):
+        def parametros_de_geracao_efetivos(self):
+            return {"thinking_level": "high", "max_output_tokens": 4096, "thinking_recusado": None}
+
+    provider = ProviderComParametros([_resposta_final()])
+    res = executar_loop(tarefa="t", provider=provider, max_turns=1)
+
+    metricas = res.metricas
+    assert metricas["thinking_level"] == "high"
+    assert metricas["max_output_tokens"] == 4096
+    assert metricas["thinking_recusado"] is None
+    # Os campos do caminho OpenAI-compatível seguem existindo, cada um no seu nome
+    assert metricas["reasoning_effort"] == "high"
+    assert metricas["max_tokens"] == 65536

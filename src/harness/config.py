@@ -8,7 +8,24 @@ PRECOS_CONFERIDOS_EM: str = "2026-09-11"
 LIMITE_DIAS_AVISO_PRECOS: int = 180  # 6 meses (~180 dias)
 
 # Preços oficiais por 1 milhão de tokens (USD)
-# Gemini: https://ai.google.dev/pricing (Paid tier Standard, conferido em set/2026)
+# Gemini: https://ai.google.dev/pricing (Paid tier Standard; página com rodapé
+#         "Last updated 2026-09-11 UTC", conferida em 2026-09-11)
+#         gemini-3.8-flash: input 0.75 | output 3.75 (inclui tokens de thinking) | cache 0.075,
+#         com degrau de preço em 01/01/2027 (1.50 / 7.50 / 0.15).
+#         TARIFA DE ARMAZENAMENTO DE CACHE: a mesma página tabela "0.50 / 1.000.000 tokens por
+#         hora (storage price)" na promoção (1.00 a partir de 01/01/2027). Ela NÃO entra neste
+#         modelo de custo porque não incide sobre cache IMPLÍCITO — e cache implícito é o único
+#         que o harness usa (prefixo estável; nenhum objeto de cache é criado: não há uma única
+#         chamada a cachedContents no código). Armazenamento é cobrado do cache EXPLÍCITO, que
+#         fica residente pelo TTL escolhido (https://ai.google.dev/api/caching: cachedContents
+#         tem `expiration`/`ttl` e é um recurso persistente). O cache implícito é automático e a
+#         página de caching só descreve o repasse do desconto, sem tarifa de armazenamento
+#         (https://ai.google.dev/gemini-api/docs/caching). Corrobora a distinção:
+#         https://docs.cloud.google.com/vertex-ai/generative-ai/docs/context-cache/context-cache-overview
+#         (a página não pôde ser lida por inteiro nesta conferência; a distinção entre implícito
+#         sem armazenamento e explícito com armazenamento aparece também no fórum oficial).
+#         CONSEQUÊNCIA: com cache implícito o modelo de custo está fechado. Se o harness passar a
+#         usar cache explícito, a tarifa de armazenamento vira pendência declarada da rodada.
 # DeepSeek: https://api-docs.deepseek.com/quick_start/pricing (conferido em 2026-09-11,
 #           modelo `deepseek-flash` — DeepSeek-V4.1-Flash)
 # Tabela oficial DeepSeek (`deepseek-flash`):
@@ -219,6 +236,66 @@ def obter_max_tokens() -> int:
             f"Usando {MAX_TOKENS_PADRAO}.\n"
         )
         return MAX_TOKENS_PADRAO
+    return valor
+
+
+# Parâmetros de geração do caminho GEMINI (API REST `generateContent`).
+# Origem, conferida em 2026-09-11:
+#   - teto de saída: https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash
+#     ("Output token limit: 65,536"; limite de entrada 1.048.576). É o mesmo 65536 declarado no
+#     caminho DeepSeek, o que mantém as duas pernas comparáveis no teto.
+#   - controle de raciocínio: https://ai.google.dev/gemini-api/docs/thinking
+#     (`thinking_level`: low | medium | high. O default documentado do 3.8 é `medium` e
+#     `minimal` NÃO é aceito nesse modelo — retorna erro.)
+# POR QUE NÃO `thinkingBudget`: o inteiro `thinkingConfig.thinkingBudget` é o controle dos
+# modelos 2.5. No 3.8 ele foi substituído por `thinking_level`, e as fontes consultadas indicam
+# que o budget ou é recusado (HTTP 400 quando os dois vão juntos) ou aceito e SILENCIOSAMENTE
+# ignorado. O segundo caso é o pior para a medição: a telemetria registraria um valor que o
+# servidor nunca aplicou — origem falsa. Por isso o campo enviado e registrado é o que existe:
+# `thinking_level`.
+# Default = o valor que o servidor já usaria sozinho (`medium`): declarar não muda o
+# comportamento, só torna a escolha auditável — mesmo critério adotado no caminho DeepSeek.
+GEMINI_MAX_OUTPUT_TOKENS_PADRAO: int = 65536
+GEMINI_THINKING_LEVEL_PADRAO: str = "medium"
+GEMINI_THINKING_LEVELS_VALIDOS: Tuple[str, ...] = ("low", "medium", "high")
+
+
+def obter_gemini_max_output_tokens() -> int:
+    """
+    Teto de tokens de saída efetivo do caminho Gemini. Override por
+    HARNESS_GEMINI_MAX_OUTPUT_TOKENS (inteiro > 0); valor inválido é ignorado com aviso em
+    stderr e o padrão vale.
+    """
+    bruto = (os.environ.get("HARNESS_GEMINI_MAX_OUTPUT_TOKENS") or "").strip()
+    if not bruto:
+        return GEMINI_MAX_OUTPUT_TOKENS_PADRAO
+    try:
+        valor = int(bruto)
+    except ValueError:
+        valor = 0
+    if valor <= 0:
+        sys.stderr.write(
+            f"[AVISO] HARNESS_GEMINI_MAX_OUTPUT_TOKENS={bruto!r} ignorado: esperado inteiro > 0. "
+            f"Usando {GEMINI_MAX_OUTPUT_TOKENS_PADRAO}.\n"
+        )
+        return GEMINI_MAX_OUTPUT_TOKENS_PADRAO
+    return valor
+
+
+def obter_gemini_thinking_level() -> str:
+    """
+    Nível de raciocínio efetivo do caminho Gemini. Override por HARNESS_GEMINI_THINKING_LEVEL
+    (low, medium ou high); valor inválido é ignorado com aviso em stderr e o padrão vale.
+    """
+    valor = (os.environ.get("HARNESS_GEMINI_THINKING_LEVEL") or "").strip().lower()
+    if not valor:
+        return GEMINI_THINKING_LEVEL_PADRAO
+    if valor not in GEMINI_THINKING_LEVELS_VALIDOS:
+        sys.stderr.write(
+            f"[AVISO] HARNESS_GEMINI_THINKING_LEVEL={valor!r} ignorado: valores aceitos são "
+            f"{', '.join(GEMINI_THINKING_LEVELS_VALIDOS)}. Usando {GEMINI_THINKING_LEVEL_PADRAO!r}.\n"
+        )
+        return GEMINI_THINKING_LEVEL_PADRAO
     return valor
 
 

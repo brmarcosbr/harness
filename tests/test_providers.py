@@ -485,3 +485,121 @@ def test_provider_gemini_nao_envia_campos_incompativeis(monkeypatch):
     assert "max_tokens" not in corpo
     assert provider.reasoning_effort is None
     assert provider.max_tokens is None
+
+
+# ============================================================================
+# Rodada E1/Gemini: parâmetros de geração declarados no corpo (item 1)
+# ============================================================================
+
+def _erro_http(url: str, code: int, mensagem: str):
+    import io
+    import urllib.error
+
+    corpo = json.dumps({"error": {"message": mensagem, "code": code, "status": "INVALID_ARGUMENT"}}).encode("utf-8")
+    return urllib.error.HTTPError(url, code, mensagem, {}, io.BytesIO(corpo))
+
+
+def _capturar_corpo_gemini(monkeypatch, respostas_falhas: int = 0):
+    """
+    Instala um urlopen falso para o endpoint Gemini que registra TODOS os corpos enviados.
+    As `respostas_falhas` primeiras chamadas levantam HTTP 400 nomeando o thinkingConfig.
+    """
+    import urllib.request
+
+    corpo_ok = {
+        "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
+        "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 3, "totalTokenCount": 13},
+    }
+    corpos = []
+
+    def fake_urlopen(req, timeout=None):
+        corpos.append(json.loads(req.data.decode("utf-8")))
+        if len(corpos) <= respostas_falhas:
+            raise _erro_http(req.full_url, 400, 'Unknown name "thinkingConfig": Cannot find field.')
+        return _RespostaFake(corpo_ok)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    return corpos
+
+
+def test_gemini_envia_max_output_tokens_e_thinking_level(monkeypatch):
+    from harness.config import GEMINI_MAX_OUTPUT_TOKENS_PADRAO, GEMINI_THINKING_LEVEL_PADRAO
+    from harness.providers import GeminiProvider
+
+    for variavel in ("HARNESS_GEMINI_MAX_OUTPUT_TOKENS", "HARNESS_GEMINI_THINKING_LEVEL"):
+        monkeypatch.delenv(variavel, raising=False)
+
+    corpos = _capturar_corpo_gemini(monkeypatch)
+    provider = GeminiProvider(api_key="chave-falsa")
+    provider.gerar(mensagens=[{"role": "user", "text": "oi"}], system_prompt="sys")
+
+    config = corpos[0]["generationConfig"]
+    assert config["maxOutputTokens"] == GEMINI_MAX_OUTPUT_TOKENS_PADRAO == 65536
+    assert config["thinkingConfig"]["thinkingLevel"] == GEMINI_THINKING_LEVEL_PADRAO == "medium"
+    # O resto do corpo continua como estava
+    assert corpos[0]["system_instruction"]["parts"][0]["text"] == "sys"
+    assert "contents" in corpos[0] and "tools" in corpos[0]
+
+
+def test_gemini_respeita_override_de_ambiente(monkeypatch):
+    from harness.providers import GeminiProvider
+
+    monkeypatch.setenv("HARNESS_GEMINI_MAX_OUTPUT_TOKENS", "8192")
+    monkeypatch.setenv("HARNESS_GEMINI_THINKING_LEVEL", "high")
+
+    corpos = _capturar_corpo_gemini(monkeypatch)
+    provider = GeminiProvider(api_key="chave-falsa")
+    provider.gerar(mensagens=[{"role": "user", "text": "oi"}], system_prompt="sys")
+
+    config = corpos[0]["generationConfig"]
+    assert config["maxOutputTokens"] == 8192
+    assert config["thinkingConfig"]["thinkingLevel"] == "high"
+    # O efetivo acompanha o override
+    efetivos = provider.parametros_de_geracao_efetivos()
+    assert efetivos["max_output_tokens"] == 8192
+    assert efetivos["thinking_level"] == "high"
+
+
+def test_gemini_override_invalido_cai_no_padrao_com_aviso(monkeypatch, capsys):
+    from harness.config import (
+        GEMINI_MAX_OUTPUT_TOKENS_PADRAO,
+        GEMINI_THINKING_LEVEL_PADRAO,
+        obter_gemini_max_output_tokens,
+        obter_gemini_thinking_level,
+    )
+
+    monkeypatch.setenv("HARNESS_GEMINI_MAX_OUTPUT_TOKENS", "0")
+    monkeypatch.setenv("HARNESS_GEMINI_THINKING_LEVEL", "turbo")
+
+    assert obter_gemini_max_output_tokens() == GEMINI_MAX_OUTPUT_TOKENS_PADRAO
+    assert obter_gemini_thinking_level() == GEMINI_THINKING_LEVEL_PADRAO
+    avisos = capsys.readouterr().err
+    assert "HARNESS_GEMINI_MAX_OUTPUT_TOKENS" in avisos
+    assert "HARNESS_GEMINI_THINKING_LEVEL" in avisos
+
+
+def test_gemini_reenvia_sem_thinking_quando_a_api_recusa(monkeypatch, capsys):
+    """
+    A recusa do bloco de thinking não pode ser silenciosa nem derrubar a execução: a chamada é
+    refeita sem o campo e o valor efetivo fica registrado como NÃO declarado.
+    """
+    from harness.providers import GeminiProvider
+
+    corpos = _capturar_corpo_gemini(monkeypatch, respostas_falhas=1)
+    provider = GeminiProvider(api_key="chave-falsa")
+    resp = provider.gerar(mensagens=[{"role": "user", "text": "oi"}], system_prompt="sys")
+
+    assert len(corpos) == 2
+    assert "thinkingConfig" in corpos[0]["generationConfig"]
+    assert "thinkingConfig" not in corpos[1]["generationConfig"]
+    # O teto continua declarado na segunda tentativa
+    assert corpos[1]["generationConfig"]["maxOutputTokens"] == 65536
+    assert resp.text == "ok"
+
+    avisos = capsys.readouterr().err
+    assert "recusou generationConfig.thinkingConfig" in avisos
+
+    efetivos = provider.parametros_de_geracao_efetivos()
+    assert efetivos["thinking_level"] is None
+    assert efetivos["thinking_recusado"]
+    assert efetivos["max_output_tokens"] == 65536

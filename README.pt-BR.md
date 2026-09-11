@@ -5,7 +5,7 @@
 > Loop multi-turno agnóstico de provider, tool use segura e **74,6% a 76,2% de economia de custo via context caching** (benchmark real com Gemini).
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-167%2F167%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-175%2F175%20passing-brightgreen)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 ![Zero Libs](https://img.shields.io/badge/external--deps-zero-informational)
 ![CI](https://github.com/brmarcosbr/harness/actions/workflows/ci.yml/badge.svg)
@@ -214,6 +214,8 @@ A suíte hoje roda **três condições com N repetições cada** (padrão 5, mí
 - **OFF** — cache OFF + poda ON (isola o efeito do cache).
 - **SEM_PODA** — cache OFF + poda OFF. Declarado explicitamente, não inferido: a terceira condição isola o efeito da *política de poda*, e a base de comparação dela é a condição OFF.
 
+O conjunto de condições efetivamente medido é selecionável (`--condicoes ON,OFF`) e o cabeçalho declara exatamente quais rodaram: um desenho de 6 células nunca é reportado como se fosse de 9.
+
 Cada execução é registrada individualmente e nunca agregada antes de gravar. Por célula tarefa × condição a suíte reporta mediana e amplitude de custo, latência, turnos e tokens, mais a taxa de sucesso (n de N). Como o validador mudou depois de observar o piloto, o registro guarda os dois critérios — o atual e o estrito histórico (arquivo de teste contendo a substring `assert`) — e o resumo reporta as duas taxas lado a lado, para que o efeito da mudança fique visível em vez de escolhido depois. Os resultados crus são gravados em `bench_<data>_<provider>.json` sob um cabeçalho com data, driver e versão, modelo efetivo, `reasoning_effort`, `max_tokens`, janela tarifária (pico/off-peak), tarifa usada, cobertura da conta, número de repetições, política de reposição e commit do repositório.
 
 As falhas são classificadas em vez de somadas. **Falha de tarefa** (houve turnos e a validação não passou) entra no denominador como fracasso normal. **Aborto** (0 turnos ou erro de conexão/API) significa que nada foi medido: é falha de instrumento, não tentativa do modelo — é registrado com `tipo_falha`, fica fora do denominador da taxa de sucesso e é reposto, até o teto de 2 reposições por célula. Estourando o teto, a coleta para e registra o motivo no cabeçalho.
@@ -294,6 +296,14 @@ HARNESS_PROVIDER=gemini
 # aliases que resolvem para high). Valor inválido é ignorado com aviso em stderr.
 # HARNESS_REASONING_EFFORT=high
 # HARNESS_MAX_TOKENS=65536
+
+# Opcionais: teto de saída e nível de raciocínio enviados ao endpoint Gemini
+# (generationConfig.maxOutputTokens e generationConfig.thinkingConfig.thinkingLevel).
+# Padrões: 65536 (limite de saída documentado do modelo) e medium (nível default documentado,
+# então declarar não muda o comportamento — só torna a escolha auditável). Níveis aceitos:
+# low, medium, high. Valor inválido é ignorado com aviso em stderr.
+# HARNESS_GEMINI_MAX_OUTPUT_TOKENS=65536
+# HARNESS_GEMINI_THINKING_LEVEL=medium
 ```
 
 ---
@@ -409,7 +419,7 @@ Modelo final: gemini-3.8-flash
 
 ## Executando a Suíte de Testes
 
-Os 167 testes unitários são executados 100% offline (utilizam mocks e providers fakes, sem dependência de rede ou consumo de cotas de API):
+Os 175 testes unitários são executados 100% offline (utilizam mocks e providers fakes, sem dependência de rede ou consumo de cotas de API):
 
 ```bash
 pytest tests/ -q
@@ -418,8 +428,8 @@ pytest tests/ -q
 Saída esperada:
 
 ```text
-.......................................................................................................................................................................  [100%]
-167 passed in 4.67s
+...............................................................................................................................................................................  [100%]
+175 passed in 4.85s
 ```
 
 Os testes cobrem:

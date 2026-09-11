@@ -5,7 +5,7 @@
 > Provider-agnostic multi-turn loop, safe tool use, and **74.6% to 76.2% cost savings via context caching** (real benchmark with Gemini).
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-167%2F167%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-175%2F175%20passing-brightgreen)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 ![Zero Libs](https://img.shields.io/badge/external--deps-zero-informational)
 ![CI](https://github.com/brmarcosbr/harness/actions/workflows/ci.yml/badge.svg)
@@ -214,6 +214,8 @@ The suite currently runs **three conditions with N repetitions each** (default 5
 - **OFF** — cache OFF + history pruning ON (isolates the cache effect).
 - **SEM_PODA** — cache OFF + history pruning OFF. Declared explicitly, not inferred: the third condition isolates the effect of the *pruning policy*, and its comparison base is the OFF condition.
 
+The set of conditions actually measured is selectable (`--condicoes ON,OFF`) and the header declares exactly which ones ran: a 6-cell design is never reported as a 9-cell one.
+
 Each execution is recorded individually and never aggregated before being written. Per task × condition the suite reports the median and range of cost, latency, turns and tokens, plus the success rate (n of N). Because the validator changed after the pilot was observed, the record stores both criteria — the current one and the strict historical one (test file containing the substring `assert`) — and the summary reports both success rates side by side, so the effect of the change is visible instead of chosen after the fact. Raw results are written to `bench_<date>_<provider>.json` under a header stating date, driver and version, effective model, `reasoning_effort`, `max_tokens`, tariff window (peak/off-peak), tariff used, account coverage, number of repetitions, replacement policy and repository commit.
 
 Failures are classified instead of lumped together. A **task failure** (there were turns, the validation did not pass) counts in the denominator as a normal failure. An **abort** (0 turns, or a connection/API error) means nothing was measured — it is instrument failure, not a model attempt: it is recorded with `tipo_falha`, excluded from the success-rate denominator, and replaced, up to 2 replacements per cell. If that ceiling is exceeded, the collection stops and reports why in the header.
@@ -292,6 +294,14 @@ HARNESS_PROVIDER=gemini
 # are aliases that resolve to high). Invalid values are ignored with a warning on stderr.
 # HARNESS_REASONING_EFFORT=high
 # HARNESS_MAX_TOKENS=65536
+
+# Optional: output ceiling and reasoning level sent to the Gemini endpoint
+# (generationConfig.maxOutputTokens and generationConfig.thinkingConfig.thinkingLevel).
+# Defaults: 65536 (the model's documented output limit) and medium (the model's documented
+# default level, so declaring it does not change behaviour — it only makes the choice
+# auditable). Accepted levels: low, medium, high. Invalid values are ignored with a warning.
+# HARNESS_GEMINI_MAX_OUTPUT_TOKENS=65536
+# HARNESS_GEMINI_THINKING_LEVEL=medium
 ```
 
 ---
@@ -407,7 +417,7 @@ Modelo final: gemini-3.8-flash
 
 ## Running the Test Suite
 
-The 167 unit tests run 100% offline (they use mocks and fake providers, with no network dependency or API quota consumption):
+The 175 unit tests run 100% offline (they use mocks and fake providers, with no network dependency or API quota consumption):
 
 ```bash
 pytest tests/ -q
@@ -416,8 +426,8 @@ pytest tests/ -q
 Expected output:
 
 ```text
-.......................................................................................................................................................................  [100%]
-167 passed in 4.67s
+...............................................................................................................................................................................  [100%]
+175 passed in 4.85s
 ```
 
 The tests cover:

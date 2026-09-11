@@ -901,3 +901,76 @@ def test_resumo_reporta_as_duas_taxas_e_o_registro_grava_o_booleano(tmp_path):
 
     celulas_t1 = [c for c in payload["resumo_por_celula"] if c["tarefa_id"] == "T1"]
     assert all(c["taxa_sucesso_estrito"] is None for c in celulas_t1)
+
+
+def test_cabecalho_registra_parametros_proprios_do_gemini(tmp_path, monkeypatch):
+    """
+    O cabeçalho do Gemini registra thinking_level e max_output_tokens em CAMPOS PRÓPRIOS, e
+    deixa reasoning_effort/max_tokens como None: são campos que a API dele não aplica.
+    """
+    from harness.providers import GeminiProvider
+
+    for variavel in ("HARNESS_GEMINI_MAX_OUTPUT_TOKENS", "HARNESS_GEMINI_THINKING_LEVEL"):
+        monkeypatch.delenv(variavel, raising=False)
+
+    provider = GeminiProvider(api_key="chave-falsa")
+    cabecalho = montar_cabecalho(
+        provider=provider,
+        repeticoes=5,
+        cobertura="credito",
+        base_dir=tmp_path,
+        momento=datetime(2026, 9, 11, 7, 0, tzinfo=timezone.utc),
+    )
+
+    assert cabecalho["driver"] == "gemini"
+    assert cabecalho["modelo_efetivo"] == "gemini-3.8-flash"
+    assert cabecalho["thinking_level"] == "medium"
+    assert cabecalho["max_output_tokens"] == 65536
+    assert cabecalho["thinking_recusado"] is None
+    # Nenhuma origem falsa: os campos do outro caminho ficam vazios, não preenchidos por analogia
+    assert cabecalho["reasoning_effort"] is None
+    assert cabecalho["max_tokens"] is None
+    # A tarifa do Gemini não tem janela de pico: o campo é declarado, não deixado em branco
+    assert cabecalho["tarifa_por_1m_tokens"] == {"input": 0.75, "output": 3.75, "cache": 0.075}
+
+
+# ============================================================================
+# Perna Gemini: seleção de condições (o braço SEM_PODA fica fora por decisão da rodada)
+# ============================================================================
+
+def test_selecionar_condicoes_aceita_subconjunto_e_recusa_nome_invalido():
+    from harness.bench import NOMES_CONDICOES, selecionar_condicoes
+
+    assert [c["nome"] for c in selecionar_condicoes()] == ["ON", "OFF", "SEM_PODA"]
+    assert [c["nome"] for c in selecionar_condicoes(["ON", "OFF"])] == ["ON", "OFF"]
+    # A ordem canônica é preservada mesmo com a entrada invertida
+    assert [c["nome"] for c in selecionar_condicoes(["OFF", "ON"])] == ["ON", "OFF"]
+    assert NOMES_CONDICOES == ("ON", "OFF", "SEM_PODA")
+
+    # Nome desconhecido é erro, não aviso: uma célula a menos não pode passar despercebida
+    with pytest.raises(ValueError) as erro:
+        selecionar_condicoes(["ON", "SEM_PODA_OFF"])
+    assert "SEM_PODA_OFF" in str(erro.value)
+    assert "Validas: ON, OFF, SEM_PODA" in str(erro.value)
+
+
+def test_coleta_de_duas_condicoes_registra_o_desenho_no_cabecalho(tmp_path):
+    def fake_factory():
+        return FakeBenchProvider([
+            ProviderResponse(text="Final", tool_calls=[], usage={"prompt": 50, "completion": 10, "total": 60, "cached": 0}, modelo="mock")
+        ])
+
+    execucoes = rodar_benchmark(
+        fake_factory, max_turns=1, base_dir=tmp_path, repeticoes=3, condicoes=["ON", "OFF"]
+    )
+
+    # 6 células (3 tarefas x 2 condições), N=3
+    assert len(execucoes) == 18
+    assert {e["condicao"] for e in execucoes} == {"ON", "OFF"}
+
+    payload = _payload_json(tmp_path)
+    assert payload["cabecalho"]["condicoes_medidas"] == ["ON", "OFF"]
+    # O cabeçalho não descreve o braço que não foi medido
+    assert "SEM_PODA" not in payload["cabecalho"]["condicoes"]
+    assert len(payload["resumo_por_celula"]) == 6
+    assert all(c["condicao"] in ("ON", "OFF") for c in payload["resumo_por_celula"])

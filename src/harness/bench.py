@@ -8,7 +8,7 @@ import re
 import subprocess
 import sys
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from harness import __version__
 from harness.config import janela_tarifaria, verificar_idade_precos
@@ -84,6 +84,31 @@ DESCRICAO_CONDICOES: Dict[str, str] = {
 REPETICOES_PADRAO = 5
 REPETICOES_MINIMAS = 3
 
+NOMES_CONDICOES: Tuple[str, ...] = tuple(c["nome"] for c in CONDICOES_BENCH)
+
+
+def selecionar_condicoes(nomes: Optional[Sequence[str]] = None) -> Tuple[Dict[str, Any], ...]:
+    """
+    Função pura que seleciona as condições a medir pelo nome, preservando a ordem canônica.
+    Sem nomes, devolve todas as três. Nome desconhecido é ERRO, não aviso: uma condição a menos
+    na coleta é uma célula a menos no resultado, e isso não pode passar despercebido.
+    """
+    if not nomes:
+        return CONDICOES_BENCH
+
+    pedidos = [str(n).strip().upper() for n in nomes if str(n).strip()]
+    if not pedidos:
+        raise ValueError("nenhuma condicao informada em --condicoes.")
+
+    desconhecidas = [n for n in pedidos if n not in NOMES_CONDICOES]
+    if desconhecidas:
+        raise ValueError(
+            f"condicao invalida: {', '.join(desconhecidas)}. "
+            f"Validas: {', '.join(NOMES_CONDICOES)}."
+        )
+
+    return tuple(c for c in CONDICOES_BENCH if c["nome"] in pedidos)
+
 # Cada célula fecha com N execuções NÃO abortadas. Aborto (0 turnos ou erro de conexão/API) é
 # falha de instrumento, não do modelo, então a execução é reposta. O teto existe para que uma
 # queda de rede não vire coleta infinita: estourou, a coleta para e avisa.
@@ -139,6 +164,16 @@ def classificar_falha(turnos: int, erro: Optional[str], sucesso: bool) -> Option
     return "tarefa"
 
 
+def parametros_proprios_do_provider(provider: Provider) -> Dict[str, Any]:
+    """
+    Parâmetros de geração próprios do provider, quando ele os declara — no Gemini são
+    `thinking_level` e `max_output_tokens`, em campos próprios. Devolve {} para quem não expõe
+    o hook (caminho OpenAI-compatível, que usa `reasoning_effort`/`max_tokens`).
+    """
+    leitor = getattr(provider, "parametros_de_geracao_efetivos", None)
+    return dict(leitor()) if callable(leitor) else {}
+
+
 def obter_commit_repo(base_dir: Optional[Union[str, Path]] = None) -> str:
     """Retorna o SHA do commit do repositório em base_dir ('desconhecido' se não for um repo git)."""
     try:
@@ -163,6 +198,7 @@ def montar_cabecalho(
     momento: Optional[datetime] = None,
     reposicoes_por_celula: Optional[Dict[str, int]] = None,
     motivo_parada: Optional[str] = None,
+    condicoes_medidas: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """
     Cabeçalho de origem da rodada gravado no topo de todo arquivo de resultado.
@@ -171,14 +207,23 @@ def montar_cabecalho(
     """
     momento = momento or datetime.now(timezone.utc)
     reposicoes = dict(reposicoes_por_celula or {})
+    proprios = parametros_proprios_do_provider(provider)
+    # Só as condições realmente medidas entram no cabeçalho: um desenho de 6 células declarado
+    # como 9 seria origem falsa no artefato.
+    nomes_medidos = list(condicoes_medidas) if condicoes_medidas else list(NOMES_CONDICOES)
     return {
         "data": momento.isoformat(),
         "driver": provider.nome,
         # Versão do harness que implementa o driver (não há SDK externo: o corpo é montado à mão)
         "driver_versao": __version__,
         "modelo_efetivo": provider.modelo_ativo,
+        # Cada caminho declara os seus: o Gemini não tem `reasoning_effort`/`max_tokens`, e
+        # reaproveitar os nomes registraria um campo que a API dele não aplicou.
         "reasoning_effort": getattr(provider, "reasoning_effort", None),
         "max_tokens": getattr(provider, "max_tokens", None),
+        "thinking_level": proprios.get("thinking_level"),
+        "max_output_tokens": proprios.get("max_output_tokens"),
+        "thinking_recusado": proprios.get("thinking_recusado"),
         "janela_tarifaria": janela_tarifaria(momento),
         "tarifa_por_1m_tokens": dict(provider.precos),
         "cobertura": cobertura,
@@ -188,7 +233,8 @@ def montar_cabecalho(
         "total_reposicoes": sum(reposicoes.values()),
         "motivo_parada": motivo_parada,
         "commit": obter_commit_repo(base_dir),
-        "condicoes": {nome: DESCRICAO_CONDICOES[nome] for nome in DESCRICAO_CONDICOES},
+        "condicoes_medidas": nomes_medidos,
+        "condicoes": {nome: DESCRICAO_CONDICOES[nome] for nome in nomes_medidos},
     }
 
 
@@ -516,6 +562,9 @@ def _metricas_zeradas() -> Dict[str, Any]:
         "prefixo_estavel_pct": 0.0,
         "reasoning_effort": None,
         "max_tokens": None,
+        "thinking_level": None,
+        "max_output_tokens": None,
+        "thinking_recusado": None,
     }
 
 
@@ -525,6 +574,7 @@ def rodar_benchmark(
     base_dir: Optional[Union[str, Path]] = None,
     repeticoes: int = REPETICOES_PADRAO,
     cobertura: str = "nao_declarada",
+    condicoes: Optional[Sequence[str]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Executa a suíte de 3 tarefas nas 3 condições (ON, OFF, SEM_PODA), com `repeticoes`
@@ -546,6 +596,9 @@ def rodar_benchmark(
 
     garantir_saida_utf8()
     verificar_idade_precos()
+    # Condições efetivamente medidas nesta rodada (permitir rodar só ON/OFF é o que torna a
+    # perna Gemini possível sem pagar por um braço que a medição do DeepSeek já mostrou inerte)
+    condicoes_medidas = selecionar_condicoes(condicoes)
     base = Path(base_dir).resolve() if base_dir else Path.cwd().resolve()
     contexto_repo = gerar_contexto_repo(base)
     execucoes: List[Dict[str, Any]] = []
@@ -553,7 +606,10 @@ def rodar_benchmark(
 
     # Provider de referência para o cabeçalho (uma instância por execução continua sendo criada)
     provider_ref = provider_factory()
-    cabecalho = montar_cabecalho(provider_ref, repeticoes, cobertura, base, inicio_rodada)
+    cabecalho = montar_cabecalho(
+        provider_ref, repeticoes, cobertura, base, inicio_rodada,
+        condicoes_medidas=[c["nome"] for c in condicoes_medidas],
+    )
 
     reposicoes_por_celula: Dict[str, int] = {}
     motivo_parada: List[Optional[str]] = [None]
@@ -650,6 +706,9 @@ def rodar_benchmark(
             "modelo": getattr(provider_instancia, "modelo_ativo", None),
             "reasoning_effort": met["reasoning_effort"],
             "max_tokens": met["max_tokens"],
+            "thinking_level": met["thinking_level"],
+            "max_output_tokens": met["max_output_tokens"],
+            "thinking_recusado": met["thinking_recusado"],
             "turnos": met["turnos_usados"],
             "prompt_tokens": met["prompt_tokens"],
             "prompt_tokens_max": met["prompt_tokens_max"],
@@ -677,8 +736,11 @@ def rodar_benchmark(
 
     print("=" * 60)
     print(f"CONDICOES MEDIDAS — {repeticoes} repeticoes por condicao")
+    for condicao in condicoes_medidas:
+        print(f"  - {condicao['nome']}: {DESCRICAO_CONDICOES[condicao['nome']]}")
     for nome in DESCRICAO_CONDICOES:
-        print(f"  - {nome}: {DESCRICAO_CONDICOES[nome]}")
+        if nome not in [c["nome"] for c in condicoes_medidas]:
+            print(f"  - {nome}: FORA desta rodada")
     print(f"Politica de reposicao: celula fecha com {repeticoes} execucoes nao abortadas; "
           f"teto de {MAX_REPOSICOES_POR_CELULA} reposicoes por celula")
     print("=" * 60)
@@ -694,14 +756,14 @@ def rodar_benchmark(
 
             t_id = tarefa["id"]
             # Estado por célula: cada uma só fecha com `repeticoes` execuções NÃO abortadas
-            estado = {c["nome"]: {"validas": 0, "reposicoes": 0} for c in CONDICOES_BENCH}
+            estado = {c["nome"]: {"validas": 0, "reposicoes": 0} for c in condicoes_medidas}
             rodada = 0
 
             while any(e["validas"] < repeticoes for e in estado.values()) and motivo_parada[0] is None:
                 rodada += 1
                 # Rotaciona a ordem das condições a cada rodada para mitigar viés de ordem/aquecimento
-                deslocamento = (idx + rodada - 1) % len(CONDICOES_BENCH)
-                ordem = CONDICOES_BENCH[deslocamento:] + CONDICOES_BENCH[:deslocamento]
+                deslocamento = (idx + rodada - 1) % len(condicoes_medidas)
+                ordem = condicoes_medidas[deslocamento:] + condicoes_medidas[:deslocamento]
 
                 for condicao in ordem:
                     nome_condicao = condicao["nome"]
