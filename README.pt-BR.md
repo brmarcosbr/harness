@@ -2,7 +2,7 @@
 
 # Agent Harness — Agente de Código com Context Caching Medido
 
-> Loop multi-turno agnóstico de provider, tool use segura e **74,6% a 76,2% de economia de custo via context caching** (benchmark real com Gemini).
+> Loop multi-turno agnóstico de provider, tool use segura e **77,8% a 79,3% de economia de custo via context caching** (benchmark real com Gemini, 5 repetições por condição).
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Tests](https://img.shields.io/badge/tests-175%2F175%20passing-brightgreen)
@@ -37,7 +37,8 @@ O **Agent Harness** é uma implementação em Python puro (sem frameworks pesado
 
 - **Zero Dependências Externas em Produção:** Usa estritamente a biblioteca padrão do Python (`urllib`, `json`, `dataclasses`, `subprocess`, `argparse`). O `pytest` é a única dependência de desenvolvimento.
 - **Multi-Provider Neutro:** Protocolo unificado de mensagens e ferramentas, adaptado dinamicamente para o schema nativo do Gemini (incluindo Gemini 3+) ou para o padrão OpenAI / DeepSeek.
-- **Context Caching Mensurado:** Prefixos determinísticos estáveis (*prefix invariance*) permitem que a API Gemini reutilize tokens cacheados a partir do 2º turno, reduzindo custos em mais de 74% (até 76,2% contrafactual).
+- **Context Caching Mensurado:** Prefixos determinísticos estáveis (*prefix invariance*) permitem que a API Gemini reutilize tokens cacheados a partir do 2º turno, reduzindo custos em mais de 77% (até 79,3% contrafactual, 5 repetições por condição).
+- **Medido em um Segundo Provedor:** O mesmo benchmark em `deepseek-flash` chega a 91,7% de economia direta (3 condições, N = 5, 45 execuções). Essas porcentagens **não são comparáveis entre provedores**: o desconto de cache é propriedade da tarifa — o token cacheado custa 1/50 do preço de entrada na DeepSeek e 1/10 no Gemini.
 - **Poda Ativa de Contexto:** Algoritmo *head-body-tail* que mantém o prefixo cacheável intacto no topo (*head*), descarta turnos intermediários quando o orçamento de tokens estoura (*body*) e preserva os turnos mais recentes (*tail*).
 - **Tools Seguras com Blocklist e Proteção de Caminho:** Comandos de terminal, leitura, escrita e busca de arquivos contam com restrições rígidas contra comandos destrutivos e *path traversal*.
 
@@ -220,9 +221,9 @@ Cada execução é registrada individualmente e nunca agregada antes de gravar. 
 
 As falhas são classificadas em vez de somadas. **Falha de tarefa** (houve turnos e a validação não passou) entra no denominador como fracasso normal. **Aborto** (0 turnos ou erro de conexão/API) significa que nada foi medido: é falha de instrumento, não tentativa do modelo — é registrado com `tipo_falha`, fica fora do denominador da taxa de sucesso e é reposto, até o teto de 2 reposições por célula. Estourando o teto, a coleta para e registra o motivo no cabeçalho.
 
-A tabela abaixo é a medição publicada (Gemini, 2 condições, uma execução cada) e fica mantida como registro histórico:
+### Primeira medição publicada — N = 1 por condição (registro histórico)
 
-Resultados medidos no modelo `gemini-3.8-flash` com o contexto do repositório (~26.000 tokens):
+Medida no modelo `gemini-3.8-flash` com o contexto do repositório. **Uma execução por condição** — que é exatamente a fragilidade que a fase E1 da medição removeu:
 
 | Tarefa | Modo | Turnos | Prompt Tokens | Cached Tokens | Custo (USD) | Economia | Sucesso |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -235,17 +236,38 @@ Resultados medidos no modelo `gemini-3.8-flash` com o contexto do repositório (
 | **TOTAL CACHE ON** | **ON** | **16** | **572.784** | **490.499** | **$0.103586** | **76,2%*** | **3/3** |
 | **TOTAL CACHE OFF** | **OFF** | **15** | **536.506** | **0** | **$0.407592** | **0,0%** | **3/3** |
 
+**Os custos absolutos das duas medições não são comparáveis entre si:** o head do contexto cresceu desde então (a T1 ON passou de 184.217 tokens de prompt em 5 turnos para 306.385 em 8). A grandeza comparável é a razão — e é o que a tabela abaixo reporta.
+
+### Medição atual — E1, N = 5 por célula
+
+Gemini, 6 células (T1/T2/T3 × ON/OFF), **5 execuções por célula, 30 execuções**, `thinking_level=medium`, `max_output_tokens=65536`, janela tarifária off-peak (o Gemini não tem tarifa de pico/off-peak), commit `9484abe`. Por célula os números são a **mediana** das 5 execuções e a faixa (mín–máx) de custo; as linhas de TOTAL são **somas das 15 execuções**, não medianas:
+
+| Tarefa | Modo | Execuções | Turnos (mediana) | Prompt Tokens (mediana) | Cached Tokens (mediana) | Custo mediano (USD) | Faixa de custo (USD) | Economia contrafactual | Sucesso |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **T1: Mapa de Módulos** | ON | 5 | 8 | 306.385 | 269.724 | $0.049482 | $0.045228 – $0.065823 | 77,7% | 4/5 |
+| | OFF | 5 | 7 | 260.349 | 0 | $0.198745 | $0.171860 – $0.234203 | 0,0% | 5/5 |
+| **T2: Geração + Teste Próprio** | ON | 5 | 5 | 173.654 | 155.326 | $0.026202 | $0.024325 – $0.026697 | 80,2% | 5/5 |
+| | OFF | 5 | 6 | 208.058 | 0 | $0.157206 | $0.131211 – $0.157969 | 0,0% | 5/5 |
+| **T3: Spec + Teste Próprio** | ON | 5 | 6 | 210.751 | 192.092 | $0.032047 | $0.031169 – $0.034912 | 80,8% | 5/5 |
+| | OFF | 5 | 5 | 175.164 | 0 | $0.133046 | $0.132314 – $0.159830 | 0,0% | 5/5 |
+| **TOTAL (soma de 15)** | **ON** | **15** | **97** | **3.523.952** | **3.134.671** | **$0.552130** | — | **79,3%** | **14/15** |
+| **TOTAL (soma de 15)** | **OFF** | **15** | **91** | **3.274.330** | **0** | **$2.486055** | — | **0,0%** | **15/15** |
+
+### O mesmo benchmark em um segundo provedor
+
+A mesma suíte foi rodada também em `deepseek-flash` (3 condições, N = 5, 45 execuções), com **91,7% de economia direta e 91,6% contrafactual** (total USD 0,7556). As porcentagens **não são comparáveis entre provedores**: o desconto de cache é propriedade da tarifa, não do harness — na DeepSeek o token cacheado custa 1/50 do preço de entrada, no Gemini 1/10. O mesmo trabalho de estabilidade de prefixo vale mais onde o desconto é maior, e isso não é mérito do harness.
+
 ### Metodologia e Transparência
 
 - **Tarefas Avaliadas:**
   - **T1 (mapa):** Criar `bench_mapa.md` listando cada módulo de `src/harness` com uma frase sobre sua responsabilidade, baseando-se no contexto do repositório e sem alterar arquivos existentes.
   - **T2 (geracao-com-teste):** Criar `bench_math.py` com função `soma(a, b)` e `bench_test_math.py` com validação de saída não-zero em caso de erro, e executar `python bench_test_math.py`.
   - **T3 (spec-de-arquivo):** Criar `bench_contador.py` com função `contar_palavras(t)` e `bench_test_contador.py` com casos de teste específicos, e executar `python bench_test_contador.py`.
-- O modelo decide autonomamente a quantidade de turnos para cada tarefa (por exemplo, na T1 o modelo utilizou 5 turnos com cache e 4 turnos sem cache, explorando arquivos de forma independente).
-- **Alternância de Ordem de Execução (Mitigação de Viés):** Para evitar que a ordem fixa (ON sempre antes de OFF) introduza viés de aquecimento de cache ou vantagens de latência no servidor do provedor, o benchmark alterna a ordem de execução a cada tarefa: T1 roda ON -> OFF, T2 roda OFF -> ON, e T3 roda ON -> OFF.
+- O modelo decide autonomamente a quantidade de turnos para cada tarefa (na medição atual, medianas de 8 turnos com cache e 7 sem cache na T1, explorando arquivos de forma independente).
+- **Alternância de Ordem de Execução (Mitigação de Viés):** Para evitar que uma ordem fixa (ON sempre antes de OFF) introduza viés de aquecimento de cache ou vantagens de latência no servidor do provedor, o benchmark rotaciona a ordem das condições a cada rodada, de modo que nenhuma condição é sempre medida primeiro. Na rodada N = 1 isso era feito por tarefa: T1 rodava ON -> OFF, T2 rodava OFF -> ON, e T3 rodava ON -> OFF.
 - **As Duas Bases de Cálculo de Economia (Transparência Total):**
-  1. **74,6% — Comparação Direta entre Execuções Distintas:** O custo real da suíte completa com Cache OFF foi de **$0.407592** (15 turnos), enquanto com Cache ON foi de **$0.103586** (16 turnos). A razão direta `($0.407592 - $0.103586) / $0.407592` resulta em **74,6% de economia real**, mesmo com o agente executando 1 turno a mais na rodada com cache.
-  2. **76,2% — Economia Contrafactual Turno a Turno (*):** O valor reportado na tabela de benchmark (`$0.331087 / 76,2%`) é a soma contrafactual calculada pelo harness sobre a exata execução com Cache ON: o que aqueles 16 turnos específicos teriam custado caso nenhum token tivesse sido servido pelo cache ($0.434673 contrafactual) versus o que de fato custaram com o desconto de cache ($0.103586 real).
+  1. **77,8% — Comparação Direta entre Execuções Distintas:** O custo real da suíte completa com Cache OFF foi de **$2.486055** (91 turnos), enquanto com Cache ON foi de **$0.552130** (97 turnos). A razão direta `($2.486055 - $0.552130) / $2.486055` resulta em **77,8% de economia real**, mesmo com o agente executando 6 turnos a mais na rodada com cache.
+  2. **79,3% — Economia Contrafactual Turno a Turno (*):** O valor reportado na tabela de benchmark (`$2.115903 / 79,3%`) é a soma contrafactual calculada pelo harness sobre a exata execução com Cache ON: o que aqueles 97 turnos teriam custado caso nenhum token tivesse sido servido pelo cache ($2.668033 contrafactual) versus o que de fato custaram com o desconto de cache ($0.552130 real).
 - O cache só passa a atuar a partir do 2º turno de cada tarefa, quando o prefixo inicial da conversa já foi ingerido e reconhecido pelo provedor.
 
 ---
@@ -413,7 +435,7 @@ Modelo final: gemini-3.8-flash
 ============================================================
 ```
 
-*(Nota: Nesta tarefa curta de 3 turnos, o prefixo continha apenas o system prompt com 640 tokens, abaixo do limiar de 4.096 tokens para ativação do cache implícito do Gemini. O totalTokenCount reportado pela API da Gemini pode incluir tokens de thinking/raciocínio interno em modelos que suportam pensamento nativo. Ao fornecer `--contexto-repo`, o head atinge ~26k tokens e a economia atinge 76,2%, como demonstrado no benchmark).*
+*(Nota: Nesta tarefa curta de 3 turnos, o prefixo continha apenas o system prompt com 640 tokens, abaixo do limiar de 4.096 tokens para ativação do cache implícito do Gemini. O totalTokenCount reportado pela API da Gemini pode incluir tokens de thinking/raciocínio interno em modelos que suportam pensamento nativo. Ao fornecer `--contexto-repo`, o maior prompt único observado na medição E1 atinge 43.293 tokens (`prompt_tokens_max` em `bench_20260911_gemini.json`) e a economia contrafactual atinge 79,3%, como demonstrado no benchmark).*
 
 ---
 
